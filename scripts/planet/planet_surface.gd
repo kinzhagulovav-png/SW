@@ -52,6 +52,7 @@ var leaving := false
 var profile: Dictionary   # Biomes.profile: радиация, кислород, минералы планеты
 var inside := false       # игрок внутри корабля
 var cover := false
+var _endure_t := 0.0    # время снаружи для опыта Выносливости
 var t_open := 0.0         # сколько секунд подряд на открытой местности
 var t_bay := 0.0          # сколько секунд в отсеке ремонта
 var _warned := {}
@@ -112,9 +113,10 @@ func _ready() -> void:
 	_build_interior()
 	_build_player()
 	_build_ui()
-	jet_max = JET_MAX * (1.7 if GameState.has_device("jetpack2") else 1.0)
+	jet_max = JET_MAX * People.jet_mult(GameState.gear("jetpack"))
 	jet = jet_max
 	GameState.stats.landings += 1
+	GameState.skill_up.connect(_on_skill_up)
 	rng.randomize()  # планета уже построена, дальше добыча случайна
 	_notify("Фон радиации: %s" % Biomes.rad_text(profile.rad), Color("#ffbf55"))
 	_notify("Сканер жизни: видов существ %d" % species.size() if not species.is_empty() else "Сканер жизни: жизни не обнаружено", Color("#9ad8ff"))
@@ -907,6 +909,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				_select_tool(1)
 			KEY_H:
 				_use_medkit()
+			KEY_C:
+				_menu.open("people")
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
 func _physics_process(delta: float) -> void:
@@ -922,7 +927,7 @@ func _physics_process(delta: float) -> void:
 		if Input.is_key_pressed(KEY_D): input.x += 1
 	var run := Input.is_key_pressed(KEY_SHIFT)
 	var in_liquid: bool = not inside and not water.is_empty() and player.position.y < level + 0.2 and not water.get("ice", false)
-	var speed := (RUN if run else WALK) * (0.55 if in_liquid and not water.get("lava", false) else 1.0)
+	var speed := (RUN if run else WALK) * People.boots_mult(GameState.gear("boots")) * (0.55 if in_liquid and not water.get("lava", false) else 1.0)
 	var dir := (player.transform.basis * Vector3(input.x, 0, input.y)).normalized()
 	player.velocity.x = dir.x * speed
 	player.velocity.z = dir.z * speed
@@ -944,6 +949,15 @@ func _physics_process(delta: float) -> void:
 	if walking:
 		bob += delta * (11.0 if run else 7.0)
 	cam.position.y = 0.7 + sin(bob) * 0.05
+
+
+func _gear_name(slot: String) -> String:
+	var g := GameState.gear(slot)
+	return "%s %s" % [People.GEAR[slot].name, People.MK[int(g.mk) - 1]] if not g.is_empty() else "%s: нет" % People.GEAR[slot].name
+
+
+func _on_skill_up(p: Dictionary, skill: String, lvl: int) -> void:
+	_notify("%s: навык «%s» вырос до %d!" % [p.name, People.SKILLS[skill].name, lvl], People.SKILLS[skill].color)
 
 
 func _use_medkit() -> void:
@@ -969,11 +983,21 @@ func _process(delta: float) -> void:
 	var use := not inside and (Input.is_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED))
 	if use and shot_cd <= 0.0:
 		if tool_index == 0:
-			shot_cd = 0.2 if GameState.has_device("blaster2") else 0.3
-			_shoot()
+			var w := GameState.gear("weapon")
+			if w.is_empty():
+				shot_cd = 1.0
+				_notify("Бластера нет. Купите его на станции или рынке.", Color("#ff8a6a"))
+			else:
+				shot_cd = People.weapon_cooldown(w)
+				_shoot()
 		else:
-			shot_cd = 0.15 if GameState.has_device("lapatron2") else 0.3
-			_use_lapatron()
+			var l := GameState.gear("lapatron")
+			if l.is_empty():
+				shot_cd = 1.0
+				_notify("Лапатрона нет. Купите его на станции или рынке.", Color("#ff8a6a"))
+			else:
+				shot_cd = 0.15 if int(l.mk) >= 2 else 0.3
+				_use_lapatron()
 	if beam:
 		beam_life -= delta
 		if beam_life <= 0.0:
@@ -1004,11 +1028,10 @@ func _process(delta: float) -> void:
 	var found := 0
 	for k in trip.minerals:
 		found += int(trip.minerals[k])
-	_info.text = "Рюкзак: %d/%d   Минералы: %d   Образцы: %d" % [backpack_used(), GameState.BACKPACK, found, trip.samples.size()]
+	_info.text = "Рюкзак: %d/%d   Минералы: %d   Образцы: %d" % [backpack_used(), GameState.backpack(), found, trip.samples.size()]
 	if not inside:
 		_info.text += "   До корабля: %d м" % int(to_ship)
-	_tool_label.text = "[1] Бластер%s     [2] Лапатрон%s" % [
-		" Мк-2" if GameState.has_device("blaster2") else "", " Мк-2" if GameState.has_device("lapatron2") else ""]
+	_tool_label.text = "[1] %s     [2] %s     [C] Персонажи" % [_gear_name("weapon"), _gear_name("lapatron")]
 	_tool_label.add_theme_color_override("font_color", Color("#6fdcff") if tool_index == 0 else Color("#ffbf55"))
 	var hint := ""
 	if tool_index == 1:
@@ -1091,7 +1114,8 @@ func _shoot() -> void:
 		var c: Vector3 = b.node.global_position + Vector3(0, 1.0 * float(b.sp.size), 0)
 		var to := c - cam.global_position
 		var d := to.length()
-		if d < best_d and to.normalized().dot(dir) > 0.982:
+		# Чем выше Точность, тем шире конус, в котором выстрел попадает.
+		if d < best_d and to.normalized().dot(dir) > 0.982 - 0.0015 * GameState.lvl("accuracy"):
 			best_d = d
 			best = b
 	var from := tool_tip.global_position
@@ -1099,7 +1123,8 @@ func _shoot() -> void:
 	_beam(from, end, Color(0.6, 2.8, 4.5))
 	recoil = 0.035
 	if best != null:
-		best.hp -= 2 if GameState.has_device("blaster2") else 1
+		best.hp -= People.weapon_damage(GameState.gear("weapon")) * (1.0 + 0.08 * GameState.lvl("accuracy"))
+		GameState.hero_xp("accuracy", 1)
 		# Раненый зверь: мирный убегает, остальные звереют.
 		if best.sp.temper == "passive":
 			best.scared = 6.0
@@ -1109,6 +1134,7 @@ func _shoot() -> void:
 			best.node.queue_free()
 			beasts.erase(best)
 			GameState.stats.beasts += 1
+			GameState.hero_xp("accuracy", 3)
 			if rng.randf() < 0.5:
 				_add_sample(0.0)
 
@@ -1134,7 +1160,7 @@ func _beam(from: Vector3, end: Vector3, col: Color) -> void:
 # ---------- Лапатрон: копание и добыча ----------
 
 func max_depth() -> float:
-	return 24.0 if GameState.has_device("lapatron2") else 12.0
+	return People.lapatron_depth(GameState.gear("lapatron"))
 
 
 func orig_heights_at(p: Vector3) -> float:
@@ -1179,7 +1205,7 @@ func _use_lapatron() -> void:
 		_notify("Под жидкостью копать нельзя", Color("#ff8a6a"))
 		return
 	_beam(tool.global_position + dir * 0.3, p, Color(3.2, 1.6, 0.4))
-	if _dig(p, 0.3 if GameState.has_device("lapatron2") else 0.22):
+	if _dig(p, People.lapatron_strength(GameState.gear("lapatron"))):
 		_dirt_fx.global_position = p + Vector3(0, 0.1, 0)
 		_dirt_fx.restart()
 		_dirt_fx.emitting = true
@@ -1211,22 +1237,24 @@ func _backpack_full() -> void:
 
 ## Кладёт минерал в рюкзак, сколько влезет. Возвращает, сколько положили.
 func _add_mineral(id: String, amount: int) -> int:
-	var room := GameState.BACKPACK - backpack_used()
+	var room := GameState.backpack() - backpack_used()
 	var took := mini(amount, room)
 	if took <= 0:
 		_backpack_full()
 		return 0
 	trip.minerals[id] = int(trip.minerals.get(id, 0)) + took
+	GameState.hero_xp("geology", 1)
 	var m: Dictionary = Items.MINERALS[id]
 	_notify("+%d %s (%s)" % [took, m.name, m.sym], m.color.lightened(0.3))
 	return took
 
 
 func _add_sample(depth: float) -> bool:
-	if GameState.BACKPACK - backpack_used() < Items.SAMPLE_VOLUME:
+	if GameState.backpack() - backpack_used() < Items.SAMPLE_VOLUME:
 		_backpack_full()
 		return false
 	trip.samples.append(Items.make_sample(rng, planet.biome, planet.name, depth))
+	GameState.hero_xp("geology", 2)
 	_notify("Найден неизвестный образец! Изучите его в лаборатории корабля.", Color("#9aff6a"))
 	return true
 
@@ -1243,7 +1271,11 @@ func _dig_loot(p: Vector3) -> void:
 		if rng.randf() < chance:
 			var id := Items.roll_mineral(rng, planet.biome, depth, allowed, _vein_mineral(p))
 			if id != "":
-				_add_mineral(id, rng.randi_range(1, 3) if rich else 1)
+				var n := rng.randi_range(1, 3) if rich else 1
+				# Геология: опытный глаз находит больше.
+				if rng.randf() < 0.06 * GameState.lvl("geology"):
+					n += 1
+				_add_mineral(id, n)
 	if depth > 1.5 and rng.randf() < min(0.015 + depth * 0.005, 0.08):
 		_add_sample(depth)
 
@@ -1321,7 +1353,8 @@ func _interact() -> void:
 
 func _leave() -> void:
 	leaving = true
-	GameState.ship.fuel = max(0.0, float(GameState.ship.fuel) - ShipData.LAND_FUEL)
+	GameState.ship.fuel = max(0.0, float(GameState.ship.fuel) - GameState.land_fuel())
+	GameState.hero_xp("piloting", 1)
 	GameState.health = hp
 	for id in trip.minerals:
 		GameState.add_item(id, int(trip.minerals[id]))
@@ -1370,10 +1403,21 @@ func _in_cover() -> bool:
 
 func _suit_outside(delta: float) -> void:
 	var suit: Dictionary = GameState.suit
-	var protect := 0.6 if GameState.has_device("suit") else 1.0
+	var sg := GameState.gear("suit")
+	var endure := 1.0 - 0.04 * GameState.lvl("endurance")
+	var protect := People.suit_rad_mult(sg) * endure
+	# Выносливость растёт от времени на открытой местности.
+	_endure_t += delta
+	if _endure_t >= 25.0:
+		_endure_t = 0.0
+		GameState.hero_xp("endurance", 1)
+	if GameState.lvl("endurance") > 0 and hp < 100.0:
+		hp = min(100.0, hp + 0.05 * GameState.lvl("endurance") * delta)
 	# Кислород.
-	suit.oxygen = max(0.0, suit.oxygen - 100.0 / 240.0 * float(profile.o2) * delta)
-	if suit.oxygen <= 0.0:
+	suit.oxygen = max(0.0, suit.oxygen - 100.0 / 240.0 * float(profile.o2) * People.suit_o2_mult(sg) * endure * delta)
+	if suit.oxygen <= 0.0 and _use_spare("o2_can", "oxygen", 60.0):
+		pass
+	elif suit.oxygen <= 0.0:
 		hp -= 4.0 * delta
 	# Радиация: на открытой местности защита тает всё быстрее, в укрытии медленно.
 	cover = _in_cover()
@@ -1386,7 +1430,9 @@ func _suit_outside(delta: float) -> void:
 		t_open += delta
 		rate = rad * 0.22 * (1.0 + t_open / 60.0)
 	suit.rad = max(0.0, suit.rad - rate * protect * delta)
-	if suit.rad <= 0.0:
+	if suit.rad <= 0.0 and _use_spare("antirad", "rad", 50.0):
+		pass
+	elif suit.rad <= 0.0:
 		hp -= rad * 1.5 * delta
 	for key in ["oxygen", "rad", "armor"]:
 		var low: bool = suit[key] < 25.0
@@ -1397,10 +1443,22 @@ func _suit_outside(delta: float) -> void:
 		_warned[key] = low
 
 
+## Запасной расходник из трюма срабатывает сам, когда шкала скафандра пуста.
+func _use_spare(id: String, key: String, amount: float) -> bool:
+	if GameState.count(id) <= 0:
+		return false
+	GameState.add_item(id, -1)
+	GameState.suit[key] = min(100.0, float(GameState.suit[key]) + amount)
+	_notify("%s: +%d" % [Items.name_of(id), int(amount)], Color("#76e8a0"))
+	return true
+
+
 ## Урон от животных и лавы: сначала его принимает броня скафандра.
 func _hurt(amount: float) -> void:
-	var a := amount * (0.6 if GameState.has_device("suit") else 1.0)
+	var a := amount * (1.0 - People.armor_cut(GameState.gear("armor")))
 	var suit: Dictionary = GameState.suit
+	if suit.armor <= 0.0:
+		_use_spare("armor_patch", "armor", 50.0)
 	if suit.armor > 0.0:
 		suit.armor = max(0.0, suit.armor - a * 0.8)
 		hp -= a * 0.25
@@ -1581,7 +1639,7 @@ func _build_lab(wall: Material, dark: Material) -> void:
 		_scientist.position = INTERIOR + Vector3(-5.7, 0, 0.6)
 		_scientist.rotation.y = PI / 2.0
 		add_child(_scientist)
-		_sign("%s · учёный, навык %d" % [sci.name, sci.skill], Vector3(-5.7, 2.15, 0.6), PI / 2.0, Color("#9aff6a"))
+		_sign("%s · учёный, Наука %d" % [sci.name, People.level(sci, "science")], Vector3(-5.7, 2.15, 0.6), PI / 2.0, Color("#9aff6a"))
 
 
 func _make_scientist() -> Node3D:

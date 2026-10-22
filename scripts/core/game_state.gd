@@ -5,13 +5,14 @@ extends Node
 
 signal hour_passed(hour: int)
 signal lab_finished(sample: Dictionary)
+## Навык персонажа вырос (person: капитан или член экипажа).
+signal skill_up(person: Dictionary, skill: String, level: int)
 
 const HOURS_PER_SECOND := 1.0
 const START_HOURS := 8.0
 const HOURS_PER_STUDY_LEVEL := 6.0
-## Объём рюкзака капитана (ячейки: минерал 1, образец 2).
+## Объём рюкзака капитана зависит от рюкзака в снаряжении (People.backpack_size).
 ## Вместимость и грузоподъёмность корабля зависят от корпуса и оборудования (ShipData).
-const BACKPACK := 40
 
 var hours: float = START_HOURS
 var money: int = 700 ## валюта «ПОТОМ»
@@ -21,11 +22,9 @@ var inventory: Dictionary = {}
 var samples: Array[Dictionary] = []
 ## Образец в лаборатории: {"sample": id, "done_at": час} или пусто.
 var lab: Dictionary = {}
-## Экипаж: [{"name", "role", "skill"}]. Роли: "учёный", позже механик, боец и другие.
+## Капитан и экипаж: навыки и снаряжение (People.new_person). Роли: "учёный", "второй пилот", позже другие.
+var hero := _new_hero()
 var crew: Array[Dictionary] = []
-## Навыки капитана. science растёт от изучения образцов.
-var skills := {"science": 0}
-var science_xp := 0
 ## Здоровье капитана и скафандр: кислород, защита от радиации, броня (всё от 0 до 100).
 ## Радзащиту и броню восстанавливает только отсек ремонта оборудования на корабле.
 var health := 100.0
@@ -61,8 +60,7 @@ func reset() -> void:
 	samples.clear()
 	lab = {}
 	crew.clear()
-	skills = {"science": 0}
-	science_xp = 0
+	hero = _new_hero()
 	ship = _new_ship()
 	shop_sold = {}
 	health = 100.0
@@ -96,6 +94,69 @@ func add_item(id: String, count: int = 1) -> void:
 
 func count(id: String) -> int:
 	return int(inventory.get(id, 0))
+
+
+func _new_hero() -> Dictionary:
+	var h := People.new_person("Капитан", "капитан")
+	h.gear = People.starter_gear()
+	return h
+
+
+# ---------- Навыки и снаряжение ----------
+
+## Опыт навыку персонажа. Экипаж учится быстрее с Лидерством капитана.
+func add_xp(p: Dictionary, skill: String, amount: int = 1) -> void:
+	if not is_same(p, hero):
+		amount = int(round(float(amount) * (1.0 + 0.1 * People.level(hero, "leadership"))))
+	var lvl := People.add_xp(p, skill, amount)
+	if lvl >= 0:
+		skill_up.emit(p, skill, lvl)
+		if not is_same(p, hero):
+			add_xp(hero, "leadership", 1)
+
+
+func hero_xp(skill: String, amount: int = 1) -> void:
+	add_xp(hero, skill, amount)
+
+
+func lvl(skill: String) -> int:
+	return People.level(hero, skill)
+
+
+## Лучший уровень навыка среди капитана и экипажа (для полёта, ремонта).
+func team_level(skill: String) -> int:
+	var best := lvl(skill)
+	for c in crew:
+		best = max(best, People.level(c, skill))
+	return best
+
+
+func gear(slot: String) -> Dictionary:
+	return hero.gear.get(slot, {})
+
+
+func backpack() -> int:
+	return People.backpack_size(gear("backpack"))
+
+
+## Множители цен: торговля капитана, на рынках колоний ещё дипломатия.
+func buy_mult(colony: bool = false) -> float:
+	return max(0.6, 1.0 - 0.03 * lvl("trade") - (0.02 * lvl("diplomacy") if colony else 0.0))
+
+
+func sell_mult(colony: bool = false) -> float:
+	return 1.0 + 0.03 * lvl("trade") + (0.02 * lvl("diplomacy") if colony else 0.0)
+
+
+## Опыт за сделку: торговля, на рынке колонии и дипломатия.
+func trade_xp(colony: bool = false) -> void:
+	hero_xp("trade", 1)
+	if colony:
+		hero_xp("diplomacy", 1)
+
+
+func land_fuel() -> float:
+	return ShipData.LAND_FUEL * (1.0 - 0.05 * team_level("piloting"))
 
 
 func _new_ship() -> Dictionary:
@@ -187,7 +248,7 @@ func max_fuel() -> float:
 
 func ship_speed() -> float:
 	var e := equip("engine")
-	return (ShipData.engine_speed(e) if not e.is_empty() else 8.0) * float(hull().speed)
+	return (ShipData.engine_speed(e) if not e.is_empty() else 8.0) * float(hull().speed) * (1.0 + 0.04 * team_level("piloting"))
 
 
 func radar_range() -> float:
@@ -197,7 +258,8 @@ func radar_range() -> float:
 
 func repair_mult() -> float:
 	var e := equip("droid")
-	return 1.0 + ShipData.power(e) * 0.5 if not e.is_empty() else 1.0
+	var base := 1.0 + ShipData.power(e) * 0.5 if not e.is_empty() else 1.0
+	return base * (1.0 + 0.1 * team_level("tech"))
 
 
 func scanner_mk() -> int:
@@ -221,6 +283,7 @@ func craft(id: String, need: Dictionary, price: int = 0) -> bool:
 		add_item(k, -int(need[k]))
 	money -= price
 	add_item(id, 1)
+	hero_xp("tech", 1)
 	return true
 
 
@@ -229,7 +292,7 @@ func craft(id: String, need: Dictionary, price: int = 0) -> bool:
 func best_scientist() -> Dictionary:
 	var best := {}
 	for c in crew:
-		if c.role == "учёный" and (best.is_empty() or int(c.skill) > int(best.skill)):
+		if c.role == "учёный" and (best.is_empty() or People.level(c, "science") > People.level(best, "science")):
 			best = c
 	return best
 
@@ -243,8 +306,9 @@ func study_problem(sample: Dictionary) -> String:
 	var sci := best_scientist()
 	if sci.is_empty():
 		return "нужен учёный в экипаже"
-	if int(sci.skill) + int(skills.science) < int(sample.level):
-		return "мало знаний: учёный %d + Наука капитана %d < сложность %d" % [sci.skill, skills.science, sample.level]
+	var know := People.level(sci, "science") + lvl("science")
+	if know < int(sample.level) * 2:
+		return "мало знаний: Наука учёного %d + капитана %d < сложность %d ×2" % [People.level(sci, "science"), lvl("science"), sample.level]
 	return ""
 
 
@@ -262,9 +326,9 @@ func _finish_study() -> void:
 		if s.id == id:
 			s.studied = true
 			s.name = s.true_name
-			science_xp += int(s.level)
-			while science_xp >= 3 and int(skills.science) < 5:
-				science_xp -= 3
-				skills.science += 1
+			hero_xp("science", 2 * int(s.level))
+			var sci := best_scientist()
+			if not sci.is_empty():
+				add_xp(sci, "science", 2 * int(s.level))
 			lab_finished.emit(s)
 			return

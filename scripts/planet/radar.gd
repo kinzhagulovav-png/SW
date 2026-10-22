@@ -3,7 +3,7 @@ extends Control
 ## Круглый радар на поверхности планеты. Верх радара: куда смотрит игрок.
 ## Корабль: жёлтый значок (за пределами дальности прижимается к краю стрелкой),
 ## животные: красные (хищники и разозлённые), оранжевые (осторожные), светло-зелёные (мирные), минералы: точки своего цвета, образцы: зелёные.
-## Со сканером недр видны богатые жилы (оранжевые пятна).
+## С детектором недр в снаряжении видны богатые жилы (оранжевые пятна), дальность зависит от Мк и Геологии.
 
 var RANGE := 70.0  # дальность зависит от радара корабля
 const RADIUS := 105.0
@@ -55,19 +55,21 @@ func _draw() -> void:
 	var n: Vector2 = _to_radar(surface.player.position + Vector3(0, 0, -1000)).normalized() * (RADIUS - 10.0)
 	draw_string(_font, c + n + Vector2(-6, 7), "С", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.75, 0.85, 1.0, 0.8))
 
-	# Сканер недр: оранжевые пятна над богатыми жилами.
-	if GameState.has_device("scanner"):
+	# Детектор недр: оранжевые пятна над богатыми жилами.
+	var reach := People.detector_reach(GameState.gear("detector")) * (1.0 + 0.05 * GameState.lvl("geology"))
+	if reach > 0.0:
 		var pp: Vector3 = surface.player.position
 		var step := 6.0
-		var x := -RANGE
-		while x <= RANGE:
-			var z := -RANGE
-			while z <= RANGE:
+		var lim: float = RANGE * min(1.0, reach)
+		var x := -lim
+		while x <= lim:
+			var z := -lim
+			while z <= lim:
 				var wx := snappedf(pp.x, step) + x
 				var wz := snappedf(pp.z, step) + z
 				if surface._vein(wx, wz) > surface.VEIN_LEVEL:
 					var r: Vector2 = _to_radar(Vector3(wx, 0, wz))
-					if r.length() < RADIUS:
+					if r.length() < RADIUS * min(1.0, reach):
 						draw_circle(c + r, 3.0, Color(1.0, 0.6, 0.2, 0.45))
 				z += step
 			x += step

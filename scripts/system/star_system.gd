@@ -527,6 +527,9 @@ func _target_info() -> Dictionary:
 	return {}
 
 
+var _fly_t := 0.0  # время в полёте для опыта Пилотирования
+
+
 func _move_ship(delta: float) -> void:
 	var info := _target_info()
 	var moving := false
@@ -540,6 +543,10 @@ func _move_ship(delta: float) -> void:
 			var step: float = min(d - info.stop, speed * delta)
 			ship.position += to / d * step
 			moving = step > speed * delta * 0.3
+			_fly_t += delta
+			if _fly_t >= 20.0:
+				_fly_t = 0.0
+				_pilot_xp(1)
 			var want := atan2(-to.x, -to.z)
 			heading = lerp_angle(heading, want, min(1.0, delta * 5.0))
 		elif info.key != "" and near != info.key:
@@ -574,6 +581,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_land()
 			KEY_I:
 				_menu.open("ship")
+			KEY_C:
+				_menu.open("people")
 			KEY_N:
 				_open_station()
 			KEY_M:
@@ -704,6 +713,10 @@ func _build_ui() -> void:
 	hold.text = "  Корабль: трюм и лаборатория (I)  "
 	hold.pressed.connect(func(): _menu.open("ship"))
 	brow.add_child(hold)
+	var people := Button.new()
+	people.text = "  Персонажи (C)  "
+	people.pressed.connect(func(): _menu.open("people"))
+	brow.add_child(people)
 	for spec in [["−", 1.25], ["+", 1.0 / 1.25]]:
 		var b := Button.new()
 		b.text = spec[0]
@@ -801,19 +814,28 @@ func _needs_copilot() -> bool:
 	return true
 
 
+## Опыт пилотирования капитану и вторым пилотам.
+func _pilot_xp(amount: int) -> void:
+	GameState.hero_xp("piloting", amount)
+	for c in GameState.crew:
+		if c.role == "второй пилот":
+			GameState.add_xp(c, "piloting", amount)
+
+
 func _land() -> void:
 	if not near.begins_with("planet"):
 		return
 	var i := int(near.substr(6))
 	var p: Dictionary = planets[i]
 	# Посадка и взлёт стоят топлива, без запаса на взлёт садиться нельзя.
-	if float(GameState.ship.fuel) < ShipData.LAND_FUEL * 2.0:
-		_status_label.text = "Мало топлива для посадки и взлёта (нужно %d). Заправьтесь на станции или на рынке колонии." % int(ShipData.LAND_FUEL * 2.0)
+	if float(GameState.ship.fuel) < GameState.land_fuel() * 2.0:
+		_status_label.text = "Мало топлива для посадки и взлёта (нужно %d). Заправьтесь на станции или на рынке колонии." % int(GameState.land_fuel() * 2.0)
 		return
 	if GameState.overloaded():
 		_status_label.text = "Перегруз: с такой массой корабль не сядет и не взлетит. Продайте или выбросьте часть груза."
 		return
-	GameState.ship.fuel = float(GameState.ship.fuel) - ShipData.LAND_FUEL
+	GameState.ship.fuel = float(GameState.ship.fuel) - GameState.land_fuel()
+	_pilot_xp(2)
 	GameState.current_planet = {"name": p.name, "biome": p.biome, "seed": p.seed}
 	GameState.system_state = {"planet": i}
 	get_tree().change_scene_to_file("res://scenes/planet/planet_surface.tscn")
