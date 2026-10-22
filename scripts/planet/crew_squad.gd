@@ -147,6 +147,8 @@ func command(key: int) -> void:
 		selected += 1
 		if selected >= members.size():
 			selected = -1
+		_update_panel()
+		surface._notify("Команды получает: %s" % ("весь экипаж" if selected < 0 else members[selected].p.name), Color("#9ad8ff"))
 		return
 	var who: Array = members if selected < 0 else [members[selected]]
 	var order := ""

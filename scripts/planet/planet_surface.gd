@@ -908,6 +908,19 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshIns
 	return mi
 
 
+## Tab ловим раньше интерфейса: иначе Godot тратит его на переключение фокуса кнопок.
+func _input(event: InputEvent) -> void:
+	if leaving or _menu.visible or not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	var key: int = event.physical_keycode if event.physical_keycode != KEY_NONE else event.keycode
+	if key == KEY_TAB:
+		get_viewport().set_input_as_handled()
+		if inside:
+			_notify("Внутри корабля команды экипажу не отдаются: выйдите наружу.", Color("#ff8a6a"))
+		else:
+			squad.command(KEY_TAB)
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if leaving:
 		return
@@ -938,7 +951,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			KEY_N:
 				_open_base()
-			KEY_TAB, KEY_G, KEY_T, KEY_V, KEY_B, KEY_X:
+			KEY_G, KEY_T, KEY_V, KEY_B, KEY_X:
 				if not inside:
 					squad.command(key)
 
