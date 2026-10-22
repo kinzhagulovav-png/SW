@@ -9,7 +9,12 @@ const HOURS_PER_SECOND := 1.0
 
 var hours: float = 8.0
 var money: int = 700 ## валюта «ПОТОМ»
+var cargo := {"ore": 0, "samples": 0}
 var galaxy_seed: int = 0
+## Планета, на которую высаживаемся: {"name", "biome", "seed"}.
+var current_planet: Dictionary = {}
+## Где был корабль в системе перед высадкой, чтобы вернуть его туда же.
+var system_state: Dictionary = {}
 
 var _last_hour: int = 8
 

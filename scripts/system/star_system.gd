@@ -3,18 +3,6 @@ extends Node3D
 ## Клик по планете, станции или пустому месту задаёт курс. Колесо мыши меняет масштаб.
 ## Пока всё строится из кода и процедурных текстур; модели из Blender заменят заготовки позже.
 
-const BIOMES := {
-	"desert": {"name": "Пустыня", "atmo": Color("#ffb070"), "cloud": Color(1, 0.94, 0.86),
-		"stops": [[0.0, "#5a321c"], [0.4, "#a8622e"], [0.6, "#d39a5a"], [0.85, "#e9c58c"], [1.0, "#f5e2b8"]]},
-	"ice": {"name": "Ледяной мир", "atmo": Color("#9fd0ff"), "cloud": Color(1, 1, 1),
-		"stops": [[0.0, "#20406a"], [0.45, "#4e7fb2"], [0.55, "#bcd6ee"], [1.0, "#ffffff"]]},
-	"jungle": {"name": "Джунгли", "atmo": Color("#7fd0ff"), "cloud": Color(1, 1, 1),
-		"stops": [[0.0, "#0a2848"], [0.47, "#1a5a88"], [0.5, "#2d6a30"], [0.7, "#3e8a34"], [0.88, "#6a7a40"], [1.0, "#9a9a70"]]},
-	"volcano": {"name": "Вулканический", "atmo": Color("#ff6a30"), "cloud": Color(0.28, 0.24, 0.24),
-		"stops": [[0.0, "#ff7a1a"], [0.3, "#a0280a"], [0.42, "#2a1612"], [0.8, "#3e302c"], [1.0, "#5a4a44"]]},
-	"toxic": {"name": "Токсичный", "atmo": Color("#c8f060"), "cloud": Color(0.86, 0.94, 0.55),
-		"stops": [[0.0, "#2a3a08"], [0.45, "#6a8a1a"], [0.6, "#a6c03a"], [0.8, "#d8e070"], [1.0, "#f0f4b0"]]},
-}
 const STAR_COLORS := ["#ffd27a", "#ffe9c4", "#a8c8ff", "#ff9a6a", "#fff4e8"]
 const SYLLABLES := ["ка", "ре", "то", "ми", "ан", "ве", "ло", "ри", "за", "ну", "эл", "ор", "си", "та", "гра", "ксе"]
 const SHIP_SPEED := 30.0
@@ -26,6 +14,7 @@ var planets: Array[Dictionary] = []
 var station: Node3D
 var station_pos := Vector3.ZERO
 var ship: Node3D
+var star: MeshInstance3D
 var ship_glows: Array[MeshInstance3D] = []
 var npcs: Array[Dictionary] = []
 var camera: Camera3D
@@ -38,6 +27,8 @@ var near := ""
 var _time_label: Label
 var _money_label: Label
 var _status_label: Label
+var _cargo_label: Label
+var _land_button: Button
 var _target_marker: MeshInstance3D
 var _glow_tex: GradientTexture2D
 
@@ -52,6 +43,7 @@ func _ready() -> void:
 	_build_ship()
 	_build_traffic()
 	_build_camera()
+	_restore_state()
 	_build_ui()
 	_update_camera(1.0, true)
 	_set_status()
@@ -64,7 +56,7 @@ func _generate() -> void:
 	for i in rng.randi_range(2, 3):
 		system_name += SYLLABLES[rng.randi() % SYLLABLES.size()]
 	system_name = system_name.capitalize()
-	var keys := BIOMES.keys()
+	var keys := Biomes.DATA.keys()
 	for i in rng.randi_range(2, 3):
 		planets.append({
 			"name": "%s %s" % [system_name, ["I", "II", "III"][i]],
@@ -143,12 +135,26 @@ func _build_star() -> void:
 	var mesh := SphereMesh.new()
 	mesh.radius = 10.0
 	mesh.height = 20.0
-	var mat := _unshaded(col)
+	mesh.radial_segments = 64
+	mesh.rings = 32
+	# Поверхность звезды: зернистая плазма с тёмными пятнами и яркими вспышками.
+	var n := FastNoiseLite.new()
+	n.seed = rng.randi()
+	n.noise_type = FastNoiseLite.TYPE_CELLULAR
+	n.frequency = 0.02
+	n.fractal_type = FastNoiseLite.FRACTAL_FBM
+	n.fractal_octaves = 3
+	n.domain_warp_enabled = true
+	n.domain_warp_amplitude = 25.0
+	var ramp := _gradient([[0.0, col.darkened(0.55)], [0.35, col.darkened(0.15)], [0.7, col], [1.0, col.lerp(Color.WHITE, 0.7)]])
+	var mat := _unshaded(Color.WHITE)
+	mat.albedo_texture = _noise_texture(n, 1024, 512, ramp, false)
 	mat.emission_enabled = true
-	mat.emission = col
-	mat.emission_energy_multiplier = 4.0
+	mat.emission_texture = mat.albedo_texture
+	mat.emission = Color.WHITE
+	mat.emission_energy_multiplier = 2.2
 	mesh.material = mat
-	var star := MeshInstance3D.new()
+	star = MeshInstance3D.new()
 	star.mesh = mesh
 	add_child(star)
 	add_child(_glow(col, 46.0, 1.4))
@@ -163,7 +169,7 @@ func _build_star() -> void:
 
 func _build_planets() -> void:
 	for p in planets:
-		var b: Dictionary = BIOMES[p.biome]
+		var b: Dictionary = Biomes.DATA[p.biome]
 		var body := Node3D.new()
 		add_child(body)
 		var sphere := MeshInstance3D.new()
@@ -487,6 +493,7 @@ func _process(delta: float) -> void:
 		p.clouds.rotation.y += delta * 0.16
 		p.label.position = pos + Vector3(0, 0, p.size + 5.0)
 	station.rotation.y += delta * 0.25
+	star.rotation.y += delta * 0.03
 	_move_ship(delta)
 	for n in npcs:
 		var node: Node3D = n.node
@@ -500,6 +507,7 @@ func _process(delta: float) -> void:
 	_update_camera(delta, false)
 	_time_label.text = GameState.time_text()
 	_money_label.text = "ПОТОМ: %d" % GameState.money
+	_cargo_label.text = "Трюм: руда %d, образцы %d" % [GameState.cargo.ore, GameState.cargo.samples]
 
 
 func _target_info() -> Dictionary:
@@ -551,6 +559,9 @@ func _update_camera(delta: float, snap: bool) -> void:
 # ---------- Ввод ----------
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_L:
+		_land()
+		return
 	if event is InputEventMouseButton and event.pressed:
 		match event.button_index:
 			MOUSE_BUTTON_LEFT:
@@ -603,8 +614,16 @@ func _click(screen: Vector2) -> void:
 # ---------- Интерфейс ----------
 
 func _build_ui() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
+	var canvas := CanvasLayer.new()
+	add_child(canvas)
+	# Корневой узел интерфейса с общей темой: крупный шрифт для всех надписей и кнопок.
+	var layer := Control.new()
+	layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var theme := Theme.new()
+	theme.default_font_size = 20
+	layer.theme = theme
+	canvas.add_child(layer)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color("#16305a")
 	style.border_color = Color("#4a78bc")
@@ -629,35 +648,47 @@ func _build_ui() -> void:
 	row.add_child(_time_label)
 	_money_label = Label.new()
 	row.add_child(_money_label)
+	_cargo_label = Label.new()
+	row.add_child(_cargo_label)
 
 	var bottom := PanelContainer.new()
 	bottom.add_theme_stylebox_override("panel", style)
 	bottom.anchor_top = 1.0
 	bottom.anchor_bottom = 1.0
+	bottom.anchor_right = 1.0
 	bottom.offset_left = 16
-	bottom.offset_top = -64
+	bottom.offset_right = -16
+	bottom.offset_top = -86
 	bottom.offset_bottom = -16
 	layer.add_child(bottom)
 	var brow := HBoxContainer.new()
-	brow.add_theme_constant_override("separation", 12)
+	brow.add_theme_constant_override("separation", 14)
 	bottom.add_child(brow)
 	_status_label = Label.new()
+	_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	brow.add_child(_status_label)
+	_land_button = Button.new()
+	_land_button.text = "  Высадиться (L)  "
+	_land_button.add_theme_color_override("font_color", Color("#ffbf55"))
+	_land_button.pressed.connect(_land)
+	brow.add_child(_land_button)
 	for spec in [["−", 1.25], ["+", 1.0 / 1.25]]:
 		var b := Button.new()
 		b.text = spec[0]
+		b.custom_minimum_size = Vector2(48, 48)
 		var k: float = spec[1]
 		b.pressed.connect(func(): zoom = clamp(zoom * k, 0.35, 2.6))
 		brow.add_child(b)
 
 	var help := Label.new()
-	help.text = "Клик по планете, станции или пустому месту: лететь туда.\nКолесо мыши: масштаб. Время в галактике идёт постоянно."
+	help.text = "Клик по планете, станции или пустому месту: лететь туда.\nКолесо мыши: масштаб. У планеты: L или «Высадиться».\nВремя в галактике идёт постоянно."
 	help.add_theme_color_override("font_color", Color(0.75, 0.8, 0.9))
 	help.anchor_left = 1.0
 	help.anchor_right = 1.0
-	help.offset_left = -640
+	help.offset_left = -760
 	help.offset_right = -16
-	help.offset_top = 16
+	help.offset_top = 84
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	layer.add_child(help)
 
@@ -665,12 +696,43 @@ func _build_ui() -> void:
 func _set_status() -> void:
 	if _status_label == null:
 		return
+	_land_button.visible = near.begins_with("planet")
 	if near == "station":
 		_status_label.text = "Пристыкованы к станции."
 	elif near.begins_with("planet"):
 		var p: Dictionary = planets[int(near.substr(6))]
-		_status_label.text = "На орбите планеты %s (%s). Высадка появится в следующей сцене." % [p.name, BIOMES[p.biome].name]
+		_status_label.text = "На орбите планеты %s (%s). Можно высаживаться." % [p.name, Biomes.DATA[p.biome].name]
 	elif not target.is_empty():
 		_status_label.text = "Летим…"
 	else:
 		_status_label.text = "Выберите цель."
+
+
+# ---------- Высадка ----------
+
+func _land() -> void:
+	if not near.begins_with("planet"):
+		return
+	var i := int(near.substr(6))
+	var p: Dictionary = planets[i]
+	GameState.current_planet = {"name": p.name, "biome": p.biome, "seed": p.seed}
+	GameState.system_state = {"planet": i}
+	get_tree().change_scene_to_file("res://scenes/planet/planet_surface.tscn")
+
+
+## После взлёта с планеты корабль появляется на её орбите.
+## Планета за это время сдвинулась: время в галактике шло, пока мы гуляли.
+func _restore_state() -> void:
+	if GameState.system_state.is_empty():
+		return
+	var i: int = GameState.system_state.get("planet", -1)
+	GameState.system_state = {}
+	if i < 0 or i >= planets.size():
+		return
+	var p: Dictionary = planets[i]
+	var pos := _planet_pos(p)
+	var out := Vector3(pos.x, 0, pos.z).normalized()
+	ship.position = pos + out * (float(p.size) + 5.0)
+	heading = atan2(-out.x, -out.z)
+	target = {"type": "planet", "index": i}
+	near = "planet%d" % i
