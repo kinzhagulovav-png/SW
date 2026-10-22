@@ -10,6 +10,9 @@ const RUN := 13.0
 const GRAVITY := 16.0
 const JET_MAX := 1.6
 const TAKEOFF_DIST := 14.0
+const CHUNK := 32 ## размер куска поверхности в клетках
+const VEIN_LEVEL := 0.42
+const REACH := 6.5 ## дальность лапатрона
 
 var planet: Dictionary
 var B: Dictionary
@@ -26,6 +29,13 @@ var ship: Node3D
 var yaw := 2.4
 var pitch := -0.05
 var jet := JET_MAX
+var jet_max := JET_MAX
+var tool_index := 0
+var _tools: Array[Node3D] = []
+var _dirt_fx: CPUParticles3D
+var _feed: VBoxContainer
+var _feed_time := 0.0
+var _tool_label: Label
 var hp := 100.0
 var recoil := 0.0
 var bob := 0.0
@@ -34,7 +44,7 @@ var beam: MeshInstance3D
 var beam_life := 0.0
 var items: Array[Dictionary] = []
 var beasts: Array[Dictionary] = []
-var trip := {"ore": 0, "samples": 0}
+var trip := {"minerals": {}, "samples": []}
 var leaving := false
 
 var _hp_bar: ProgressBar
@@ -47,6 +57,15 @@ var _n_ridge := FastNoiseLite.new()
 var _n_detail := FastNoiseLite.new()
 var _n_grass := FastNoiseLite.new()
 var _n_forest := FastNoiseLite.new()
+var _n_vein := FastNoiseLite.new()
+var orig_heights := PackedFloat32Array()
+var _chunks: Array[MeshInstance3D] = []
+var _hmap: HeightMapShape3D
+var _terrain_mat: StandardMaterial3D
+var _sand: Color
+var _dirt: Color
+var _grass: MultiMesh
+var _grass_cells := {}
 
 
 func _ready() -> void:
@@ -69,6 +88,10 @@ func _ready() -> void:
 	_build_ship()
 	_build_player()
 	_build_ui()
+	jet_max = JET_MAX * (1.7 if GameState.has_device("jetpack2") else 1.0)
+	jet = jet_max
+	GameState.stats.landings += 1
+	rng.randomize()  # планета уже построена, дальше добыча случайна
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -92,6 +115,11 @@ func _setup_noise() -> void:
 	_n_forest.seed = s + 77
 	_n_forest.frequency = 0.02
 	_n_forest.fractal_octaves = 3
+	_n_vein.seed = s + 555
+	_n_vein.frequency = 0.035
+	_n_vein.fractal_octaves = 2
+	_sand = Color("#120c0a") if planet.biome == "volcano" else Color("#a89a78")
+	_dirt = Color(B.low).lerp(Color("#7a5a40"), 0.55)
 
 
 func _raw_height(x: float, z: float) -> float:
@@ -144,41 +172,84 @@ func _normal_at(x: float, z: float) -> Vector3:
 
 
 func _build_terrain() -> void:
+	orig_heights = heights.duplicate()
+	_terrain_mat = StandardMaterial3D.new()
+	_terrain_mat.vertex_color_use_as_albedo = true
+	_terrain_mat.vertex_color_is_srgb = true
+	_terrain_mat.albedo_texture = _grain_texture()
+	_terrain_mat.roughness = 0.95
+	_terrain_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Поверхность нарезана на куски, чтобы после копания перестраивать только нужные.
+	var per_side := SIZE / CHUNK
+	for cz in per_side:
+		for cx in per_side:
+			var mi := MeshInstance3D.new()
+			mi.mesh = _chunk_mesh(cx, cz)
+			add_child(mi)
+			_chunks.append(mi)
+
+	var body := StaticBody3D.new()
+	var shape := CollisionShape3D.new()
+	_hmap = HeightMapShape3D.new()
+	_hmap.map_width = SIZE + 1
+	_hmap.map_depth = SIZE + 1
+	_hmap.map_data = heights
+	shape.shape = _hmap
+	body.add_child(shape)
+	add_child(body)
+
+
+func _vertex_color(ix: int, iz: int, nr: Vector3) -> Color:
 	var n := SIZE + 1
+	var x := ix - SIZE / 2.0
+	var z := iz - SIZE / 2.0
+	var y := heights[iz * n + ix]
+	var amp: float = B.amp
+	var k: float = clamp((y + amp * 0.6) / (amp * 1.7), 0.0, 1.0)
+	var col: Color = B.low.lerp(B.high, k)
+	var gm := smoothstep(-0.12, 0.12, _n_grass.get_noise_2d(x, z)) * smoothstep(0.82, 0.94, nr.y) * float(B.grass_cover)
+	col = col.lerp(B.grass * 0.8, gm)
+	col = col.lerp(B.rock, 1.0 - smoothstep(0.62, 0.82, nr.y))
+	if not water.is_empty():
+		col = col.lerp(_sand, 1.0 - smoothstep(level + 0.4, level + 2.2, y))
+	# Раскопанная земля: темнее и с цветом недр.
+	var dug := orig_heights[iz * n + ix] - y
+	if dug > 0.02:
+		col = col.lerp(_dirt, clamp(dug / 0.8, 0.0, 1.0))
+		if _vein(x, z) > VEIN_LEVEL and dug > 0.5:
+			col = col.lerp(Color("#d8a040"), 0.35)
+	return col * (1.0 + _n_detail.get_noise_2d(x * 2.0, z * 2.0) * 0.12)
+
+
+func _chunk_mesh(cx: int, cz: int) -> ArrayMesh:
+	var n := SIZE + 1
+	var m := CHUNK + 1
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var colors := PackedColorArray()
 	var uvs := PackedVector2Array()
-	verts.resize(n * n)
-	normals.resize(n * n)
-	colors.resize(n * n)
-	uvs.resize(n * n)
-	var amp: float = B.amp
-	var sand := Color("#120c0a") if planet.biome == "volcano" else Color("#a89a78")
-	for iz in n:
-		for ix in n:
-			var i := iz * n + ix
+	verts.resize(m * m)
+	normals.resize(m * m)
+	colors.resize(m * m)
+	uvs.resize(m * m)
+	for lz in m:
+		for lx in m:
+			var ix := cx * CHUNK + lx
+			var iz := cz * CHUNK + lz
+			var i := lz * m + lx
 			var x := ix - SIZE / 2.0
 			var z := iz - SIZE / 2.0
-			var y := heights[i]
-			verts[i] = Vector3(x, y, z)
+			verts[i] = Vector3(x, heights[iz * n + ix], z)
 			var nr := _normal_at(x, z)
 			normals[i] = nr
 			uvs[i] = Vector2(x, z) * 0.25
-			var k: float = clamp((y + amp * 0.6) / (amp * 1.7), 0.0, 1.0)
-			var col: Color = B.low.lerp(B.high, k)
-			var gm := smoothstep(-0.12, 0.12, _n_grass.get_noise_2d(x, z)) * smoothstep(0.82, 0.94, nr.y) * float(B.grass_cover)
-			col = col.lerp(B.grass * 0.8, gm)
-			col = col.lerp(B.rock, 1.0 - smoothstep(0.62, 0.82, nr.y))
-			if not water.is_empty():
-				col = col.lerp(sand, 1.0 - smoothstep(level + 0.4, level + 2.2, y))
-			colors[i] = col * (1.0 + _n_detail.get_noise_2d(x * 2.0, z * 2.0) * 0.12)
+			colors[i] = _vertex_color(ix, iz, nr)
 	var idx := PackedInt32Array()
-	for iz in SIZE:
-		for ix in SIZE:
-			var a := iz * n + ix
+	for lz in CHUNK:
+		for lx in CHUNK:
+			var a := lz * m + lx
 			var b := a + 1
-			var c := a + n
+			var c := a + m
 			var d := c + 1
 			idx.append_array([a, b, c, b, d, c])
 	var arrays := []
@@ -190,26 +261,13 @@ func _build_terrain() -> void:
 	arrays[Mesh.ARRAY_INDEX] = idx
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.vertex_color_is_srgb = true
-	mat.albedo_texture = _grain_texture()
-	mat.roughness = 0.95
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mesh.surface_set_material(0, mat)
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	add_child(mi)
+	mesh.surface_set_material(0, _terrain_mat)
+	return mesh
 
-	var body := StaticBody3D.new()
-	var shape := CollisionShape3D.new()
-	var hm := HeightMapShape3D.new()
-	hm.map_width = n
-	hm.map_depth = n
-	hm.map_data = heights
-	shape.shape = hm
-	body.add_child(shape)
-	add_child(body)
+
+## Залежи в недрах: где шум выше VEIN_LEVEL, там богатая жила.
+func _vein(x: float, z: float) -> float:
+	return _n_vein.get_noise_2d(x, z)
 
 
 func _grain_texture() -> NoiseTexture2D:
@@ -398,7 +456,11 @@ void fragment() {
 		var s := rng.randf_range(0.7, 1.6) * float(B.grass_h)
 		list.append({"t": _xf(Vector3(x, y - 0.05, z), Vector3(rng.randf_range(-0.2, 0.2), rng.randf() * TAU, rng.randf_range(-0.2, 0.2)), Vector3(rng.randf_range(1.0, 1.8), s, 1.0)),
 			"c": B.grass * rng.randf_range(0.75, 1.25)})
-	_multimesh(blade, list, mat, false)
+		var cell := Vector2i(floori(x / 4.0), floori(z / 4.0))
+		if not _grass_cells.has(cell):
+			_grass_cells[cell] = []
+		_grass_cells[cell].append(list.size() - 1)
+	_grass = _multimesh(blade, list, mat, false).multimesh
 
 
 func _build_rocks() -> void:
@@ -541,33 +603,39 @@ func _shifted(m: Mesh) -> ArrayMesh:
 # ---------- Ресурсы и животные ----------
 
 func _build_items() -> void:
-	var crystal := StandardMaterial3D.new()
-	crystal.albedo_color = Color("#5fe0ff")
-	crystal.emission_enabled = true
-	crystal.emission = Color("#38c8ff")
-	crystal.emission_energy_multiplier = 1.6
-	crystal.roughness = 0.15
 	var octa := SphereMesh.new()
 	octa.radial_segments = 4
 	octa.rings = 2
 	octa.radius = 0.5
 	octa.height = 1.0
-	octa.material = crystal
-	for i in 26:
+	var mats := {}
+	for i in 30:
 		var p = _spot(140.0, 0.6)
 		if p == null:
 			continue
+		var mid := Items.roll_mineral(rng, planet.biome, rng.randf() * 3.0)
+		if not mats.has(mid):
+			var c: Color = Items.MINERALS[mid].color
+			var cm := StandardMaterial3D.new()
+			cm.albedo_color = c
+			cm.metallic = 0.3
+			cm.roughness = 0.2
+			cm.emission_enabled = true
+			cm.emission = c
+			cm.emission_energy_multiplier = 0.9
+			mats[mid] = cm
 		var g := Node3D.new()
 		for k in 4:
 			var m := MeshInstance3D.new()
 			m.mesh = octa
+			m.material_override = mats[mid]
 			m.scale = Vector3(rng.randf_range(0.6, 1.0), rng.randf_range(1.6, 3.4), rng.randf_range(0.6, 1.0))
 			m.position = Vector3(rng.randf_range(-0.6, 0.6), 0.4, rng.randf_range(-0.6, 0.6))
 			m.rotation = Vector3(rng.randf_range(-0.4, 0.4), rng.randf() * 3.0, rng.randf_range(-0.4, 0.4))
 			g.add_child(m)
 		g.position = p
 		add_child(g)
-		items.append({"node": g, "type": "ore"})
+		items.append({"node": g, "type": "mineral", "mineral": mid, "amount": rng.randi_range(3, 6)})
 
 	var bulb := StandardMaterial3D.new()
 	bulb.albedo_color = Color("#a0ff80")
@@ -575,7 +643,7 @@ func _build_items() -> void:
 	bulb.emission = Color("#60ff50")
 	bulb.emission_energy_multiplier = 2.0
 	var stem := ShipBuilder.metal(Color("#3a6a2a"), 0.0, 0.8)
-	for i in 16:
+	for i in 10:
 		var p = _spot(140.0, 0.7)
 		if p == null:
 			continue
@@ -599,7 +667,7 @@ func _build_items() -> void:
 		g.add_child(bb)
 		g.position = p
 		add_child(g)
-		items.append({"node": g, "type": "samples"})
+		items.append({"node": g, "type": "sample"})
 
 
 func _make_creature(col: Color) -> Dictionary:
@@ -715,12 +783,38 @@ func _build_player() -> void:
 	player.position = Vector3(SPAWN.x, ground(SPAWN.x, SPAWN.y) + 1.2, SPAWN.y)
 	yaw = atan2(-8.0, -8.0) + 0.55
 	add_child(player)
+	_build_blaster()
+	_build_lapatron()
+	_select_tool(0)
+	_dirt_fx = CPUParticles3D.new()
+	_dirt_fx.emitting = false
+	_dirt_fx.one_shot = true
+	_dirt_fx.amount = 18
+	_dirt_fx.lifetime = 0.7
+	_dirt_fx.explosiveness = 0.95
+	_dirt_fx.direction = Vector3.UP
+	_dirt_fx.spread = 50.0
+	_dirt_fx.initial_velocity_min = 2.0
+	_dirt_fx.initial_velocity_max = 4.5
+	_dirt_fx.gravity = Vector3(0, -14, 0)
+	_dirt_fx.scale_amount_min = 0.6
+	_dirt_fx.scale_amount_max = 1.4
+	var bm := BoxMesh.new()
+	bm.size = Vector3.ONE * 0.09
+	var dm := StandardMaterial3D.new()
+	dm.albedo_color = _dirt.lightened(0.15)
+	bm.material = dm
+	_dirt_fx.mesh = bm
+	add_child(_dirt_fx)
 
-	tool = Node3D.new()
+
+## Бластер: оружие против животных.
+func _build_blaster() -> void:
+	var t := Node3D.new()
 	var body_mat := ShipBuilder.metal(Color("#d8dce4"), 0.85, 0.28)
 	var acc := ShipBuilder.metal(Color("#e07a20"), 0.4, 0.4)
-	_box(tool, Vector3(0.09, 0.1, 0.36), Vector3.ZERO, body_mat)
-	_box(tool, Vector3(0.06, 0.16, 0.07), Vector3(0, -0.1, 0.08), acc).rotation.x = 0.3
+	_box(t, Vector3(0.09, 0.1, 0.36), Vector3.ZERO, body_mat)
+	_box(t, Vector3(0.06, 0.16, 0.07), Vector3(0, -0.1, 0.08), acc).rotation.x = 0.3
 	var barrel := MeshInstance3D.new()
 	var bm := CylinderMesh.new()
 	bm.top_radius = 0.022
@@ -730,14 +824,55 @@ func _build_player() -> void:
 	barrel.mesh = bm
 	barrel.rotation.x = PI / 2.0
 	barrel.position = Vector3(0, 0.01, -0.27)
-	tool.add_child(barrel)
-	_box(tool, Vector3(0.092, 0.012, 0.2), Vector3(0, 0.052, -0.02), ShipBuilder.unshaded(Color(0.4, 2.0, 3.4)))
+	t.add_child(barrel)
+	_box(t, Vector3(0.092, 0.012, 0.2), Vector3(0, 0.052, -0.02), ShipBuilder.unshaded(Color(0.4, 2.0, 3.4)))
 	tool_tip = Node3D.new()
 	tool_tip.position = Vector3(0, 0.01, -0.4)
-	tool.add_child(tool_tip)
-	tool.scale = Vector3.ONE * 0.42
-	tool.position = Vector3(0.19, -0.15, -0.36)
-	cam.add_child(tool)
+	t.add_child(tool_tip)
+	t.scale = Vector3.ONE * 0.42
+	cam.add_child(t)
+	_tools.append(t)
+
+
+## Лапатрон: устройство в виде лопаты, копает землю и добывает минералы и образцы.
+func _build_lapatron() -> void:
+	var t := Node3D.new()
+	var metal := ShipBuilder.metal(Color("#9aa4b4"), 0.9, 0.3)
+	var grip := ShipBuilder.metal(Color("#2a2e36"), 0.2, 0.7)
+	var glow := ShipBuilder.unshaded(Color(3.2, 1.6, 0.4))
+	var shaft := MeshInstance3D.new()
+	var sm := CylinderMesh.new()
+	sm.top_radius = 0.025
+	sm.bottom_radius = 0.025
+	sm.height = 0.7
+	sm.material = grip
+	shaft.mesh = sm
+	shaft.rotation.x = PI / 2.0
+	shaft.position = Vector3(0, 0, 0.05)
+	t.add_child(shaft)
+	_box(t, Vector3(0.16, 0.035, 0.035), Vector3(0, 0, 0.4), grip)  # поперечная рукоять
+	_box(t, Vector3(0.07, 0.07, 0.12), Vector3(0, 0, -0.26), metal)  # блок генератора
+	_box(t, Vector3(0.075, 0.02, 0.06), Vector3(0, 0.04, -0.26), glow)
+	var blade := MeshInstance3D.new()
+	var pm := PrismMesh.new()
+	pm.size = Vector3(0.26, 0.3, 0.025)
+	pm.material = metal
+	blade.mesh = pm
+	blade.rotation = Vector3(-PI / 2.0, 0, PI)
+	blade.position = Vector3(0, 0, -0.47)
+	t.add_child(blade)
+	_box(t, Vector3(0.22, 0.03, 0.012), Vector3(0, 0, -0.6), glow).rotation.x = PI / 2.0
+	t.scale = Vector3.ONE * 0.55
+	t.rotation = Vector3(0.25, 0.15, 0)
+	cam.add_child(t)
+	_tools.append(t)
+
+
+func _select_tool(i: int) -> void:
+	tool_index = i
+	for k in _tools.size():
+		_tools[k].visible = k == i
+	tool = _tools[i]
 
 
 func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
@@ -752,17 +887,28 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshIns
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if leaving:
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		yaw -= event.relative.x * 0.0025
 		pitch = clamp(pitch - event.relative.y * 0.0025, -1.3, 1.3)
-	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+	elif event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		elif event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_select_tool(1 - tool_index)
 	elif event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_ESCAPE:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		elif event.keycode == KEY_E:
-			_try_takeoff()
+		match event.keycode:
+			KEY_ESCAPE:
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			KEY_E:
+				_try_takeoff()
+			KEY_1:
+				_select_tool(0)
+			KEY_2:
+				_select_tool(1)
+			KEY_H:
+				_use_medkit()
 
 
 func _physics_process(delta: float) -> void:
@@ -785,7 +931,7 @@ func _physics_process(delta: float) -> void:
 		player.velocity.y = min(player.velocity.y + 30.0 * delta, 9.0)
 		jet = max(0.0, jet - delta)
 	elif player.is_on_floor():
-		jet = min(JET_MAX, jet + delta * 0.8)
+		jet = min(jet_max, jet + delta * 0.8)
 	player.velocity.y -= GRAVITY * delta
 	if in_liquid and not water.get("lava", false):
 		player.velocity.y = max(player.velocity.y, 0.0) if player.position.y < level - 0.6 else player.velocity.y
@@ -793,24 +939,33 @@ func _physics_process(delta: float) -> void:
 	player.position.x = clamp(player.position.x, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
 	player.position.z = clamp(player.position.z, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
 	if in_liquid and water.get("lava", false):
-		hp -= 30.0 * delta
+		_hurt(30.0 * delta)
 	var walking := input != Vector2.ZERO and player.is_on_floor()
 	if walking:
 		bob += delta * (11.0 if run else 7.0)
 	cam.position.y = 0.7 + sin(bob) * 0.05
 
 
+func _hurt(amount: float) -> void:
+	hp -= amount * (0.6 if GameState.has_device("suit") else 1.0)
+
+
+func _use_medkit() -> void:
+	if GameState.count("medkit") <= 0:
+		_notify("Аптечек нет. Их делают на научной станции.", Color("#ff8a6a"))
+		return
+	if hp >= 100.0:
+		return
+	GameState.add_item("medkit", -1)
+	hp = min(100.0, hp + 60.0)
+	_notify("Аптечка: +60 здоровья", Color("#76e8a0"))
+
+
 func _process(delta: float) -> void:
 	if leaving:
 		return
-	var me := cam.global_position
-	for it in items.duplicate():
-		var n: Node3D = it.node
-		n.rotation.y += delta * 0.8
-		if n.global_position.distance_to(player.global_position) < 2.8:
-			trip[it.type] += 1
-			n.queue_free()
-			items.erase(it)
+	for it in items:
+		it.node.rotation.y += delta * 0.8
 	for b in beasts:
 		var n: Node3D = b.node
 		var d := n.position.distance_to(player.position)
@@ -826,33 +981,51 @@ func _process(delta: float) -> void:
 		for i in b.legs.size():
 			b.legs[i].rotation.x = sin(b.phase + (0.0 if i == 0 or i == 3 else PI)) * 0.55
 		if d < 2.6:
-			hp -= 12.0 * delta
+			_hurt(12.0 * delta)
 	shot_cd -= delta
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and shot_cd <= 0.0:
-		shot_cd = 0.3
-		_shoot()
-	if Input.is_key_pressed(KEY_F) and shot_cd <= 0.0:
-		shot_cd = 0.3
-		_shoot()
+	var use := Input.is_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+	if use and shot_cd <= 0.0:
+		if tool_index == 0:
+			shot_cd = 0.2 if GameState.has_device("blaster2") else 0.3
+			_shoot()
+		else:
+			shot_cd = 0.15 if GameState.has_device("lapatron2") else 0.3
+			_use_lapatron()
 	if beam:
 		beam_life -= delta
 		if beam_life <= 0.0:
 			beam.queue_free()
 			beam = null
 	recoil = max(0.0, recoil - delta * 0.6)
-	tool.position = Vector3(0.19 + cos(bob * 0.5) * 0.006, -0.15 + abs(sin(bob * 0.5)) * 0.008, -0.36 + recoil)
+	var base := Vector3(0.19, -0.15, -0.36) if tool_index == 0 else Vector3(0.24, -0.26, -0.5)
+	tool.position = base + Vector3(cos(bob * 0.5) * 0.006, abs(sin(bob * 0.5)) * 0.008, recoil)
 	hp = min(100.0, hp + 0.4 * delta)
 	if hp <= 0.0:
-		print("Капитан тяжело ранен, экипаж эвакуировал его на корабль. Собранное потеряно.")
-		trip = {"ore": 0, "samples": 0}
-		_leave()
+		_die()
 		return
 	var to_ship := ship.global_position.distance_to(player.global_position)
 	_hp_bar.value = hp
-	_jet_bar.value = jet / JET_MAX * 100.0
-	_info.text = "Руда: %d   Образцы: %d   До корабля: %d м" % [trip.ore, trip.samples, int(to_ship)]
-	_prompt.text = "Нажмите E, чтобы взлететь" if to_ship < TAKEOFF_DIST else ""
+	_jet_bar.value = jet / jet_max * 100.0
+	var found := 0
+	for k in trip.minerals:
+		found += int(trip.minerals[k])
+	_info.text = "Минералы: %d   Образцы: %d   До корабля: %d м" % [found, trip.samples.size(), int(to_ship)]
+	_tool_label.text = "[1] Бластер%s     [2] Лапатрон%s" % [
+		" Мк-2" if GameState.has_device("blaster2") else "", " Мк-2" if GameState.has_device("lapatron2") else ""]
+	_tool_label.add_theme_color_override("font_color", Color("#6fdcff") if tool_index == 0 else Color("#ffbf55"))
+	var hint := ""
+	if tool_index == 1:
+		var hit = _aim_ground()
+		if hit != null and (hit as Vector3).y < orig_heights_at(hit) - max_depth() + 0.05:
+			hint = "Глубже лапатрон не берёт"
+	if to_ship < TAKEOFF_DIST:
+		hint = "Нажмите E, чтобы взлететь"
+	_prompt.text = hint
 	_time.text = GameState.time_text()
+	_feed_time -= delta
+	if _feed_time <= 0.0 and _feed.get_child_count() > 0:
+		_feed.get_child(0).queue_free()
+		_feed_time = 1.2
 
 
 func _shoot() -> void:
@@ -868,29 +1041,167 @@ func _shoot() -> void:
 			best = b
 	var from := tool_tip.global_position
 	var end := cam.global_position + dir * best_d
+	_beam(from, end, Color(0.6, 2.8, 4.5))
+	recoil = 0.035
+	if best != null:
+		best.hp -= 2 if GameState.has_device("blaster2") else 1
+		if best.hp <= 0:
+			best.node.queue_free()
+			beasts.erase(best)
+			GameState.stats.beasts += 1
+			if rng.randf() < 0.5:
+				_add_sample(0.0)
+
+
+func _beam(from: Vector3, end: Vector3, col: Color) -> void:
 	if beam:
 		beam.queue_free()
 	beam = MeshInstance3D.new()
 	var cm := CylinderMesh.new()
-	var blen := from.distance_to(end)
 	cm.top_radius = 0.018
 	cm.bottom_radius = 0.018
-	cm.height = blen
-	cm.material = ShipBuilder.unshaded(Color(0.6, 2.8, 4.5))
+	cm.height = max(0.05, from.distance_to(end))
+	cm.material = ShipBuilder.unshaded(col)
 	beam.mesh = cm
 	add_child(beam)
 	beam.global_position = (from + end) / 2.0
-	beam.look_at(end, Vector3.UP)
-	beam.rotate_object_local(Vector3.RIGHT, PI / 2.0)
+	if from.distance_to(end) > 0.01:
+		beam.look_at(end, Vector3.UP if abs((end - from).normalized().y) < 0.99 else Vector3.RIGHT)
+		beam.rotate_object_local(Vector3.RIGHT, PI / 2.0)
 	beam_life = 0.1
-	recoil = 0.035
-	if best != null:
-		best.hp -= 1
-		if best.hp <= 0:
-			best.node.queue_free()
-			beasts.erase(best)
-			if rng.randf() < 0.6:
-				trip.samples += 1
+
+
+# ---------- Лапатрон: копание и добыча ----------
+
+func max_depth() -> float:
+	return 24.0 if GameState.has_device("lapatron2") else 12.0
+
+
+func orig_heights_at(p: Vector3) -> float:
+	var n := SIZE + 1
+	var ix := clampi(roundi(p.x + SIZE / 2.0), 0, SIZE)
+	var iz := clampi(roundi(p.z + SIZE / 2.0), 0, SIZE)
+	return orig_heights[iz * n + ix]
+
+
+## Точка на земле под прицелом (в пределах досягаемости) или null.
+func _aim_ground() -> Variant:
+	var from := cam.global_position
+	var dir := -cam.global_transform.basis.z
+	var t := 0.3
+	while t < REACH:
+		var p := from + dir * t
+		if p.y <= ground(p.x, p.z):
+			return p
+		t += 0.1
+	return null
+
+
+func _use_lapatron() -> void:
+	recoil = 0.06
+	var from := cam.global_position
+	var dir := -cam.global_transform.basis.z
+	# Сначала кристаллы и образцы на поверхности.
+	for it in items:
+		var c: Vector3 = it.node.global_position + Vector3(0, 0.7, 0)
+		var along := (c - from).dot(dir)
+		if along < 0.0 or along > REACH + 1.0:
+			continue
+		if (from + dir * along).distance_to(c) < 1.1:
+			_beam(tool.global_position + dir * 0.3, c, Color(3.2, 1.6, 0.4))
+			_collect(it)
+			return
+	var hit = _aim_ground()
+	if hit == null:
+		return
+	var p: Vector3 = hit
+	if not water.is_empty() and p.y < level + 0.1 and not water.get("ice", false):
+		_notify("Под жидкостью копать нельзя", Color("#ff8a6a"))
+		return
+	_beam(tool.global_position + dir * 0.3, p, Color(3.2, 1.6, 0.4))
+	if _dig(p, 0.3 if GameState.has_device("lapatron2") else 0.22):
+		_dirt_fx.global_position = p + Vector3(0, 0.1, 0)
+		_dirt_fx.restart()
+		_dirt_fx.emitting = true
+		_dig_loot(p)
+
+
+func _collect(it: Dictionary) -> void:
+	items.erase(it)
+	it.node.queue_free()
+	if it.type == "mineral":
+		_add_mineral(it.mineral, int(it.amount))
+	else:
+		_add_sample(0.0)
+
+
+func _add_mineral(id: String, amount: int) -> void:
+	trip.minerals[id] = int(trip.minerals.get(id, 0)) + amount
+	var m: Dictionary = Items.MINERALS[id]
+	_notify("+%d %s (%s)" % [amount, m.name, m.sym], m.color.lightened(0.3))
+
+
+func _add_sample(depth: float) -> void:
+	trip.samples.append(Items.make_sample(rng, planet.biome, planet.name, depth))
+	_notify("Найден неизвестный образец! Изучите его в лаборатории корабля.", Color("#9aff6a"))
+
+
+## Добыча из недр: чем глубже, тем больше редких минералов; на жиле добыча богаче.
+func _dig_loot(p: Vector3) -> void:
+	var depth: float = max(0.0, orig_heights_at(p) - ground(p.x, p.z))
+	var rich := _vein(p.x, p.z) > VEIN_LEVEL
+	var chance: float = 0.22 + min(depth, 10.0) * 0.03 + (0.35 if rich else 0.0)
+	if rng.randf() < chance:
+		var id := Items.roll_mineral(rng, planet.biome, depth + (2.0 if rich else 0.0))
+		_add_mineral(id, rng.randi_range(1, 3 if rich else 2))
+	if depth > 1.5 and rng.randf() < min(0.02 + depth * 0.006, 0.1):
+		_add_sample(depth)
+
+
+## Опускает землю вокруг точки. Возвращает false, если копать больше некуда.
+func _dig(p: Vector3, strength: float) -> bool:
+	const R := 1.8
+	var n := SIZE + 1
+	var cx := p.x + SIZE / 2.0
+	var cz := p.z + SIZE / 2.0
+	var ix0 := clampi(floori(cx - R), 1, SIZE - 1)
+	var ix1 := clampi(ceili(cx + R), 1, SIZE - 1)
+	var iz0 := clampi(floori(cz - R), 1, SIZE - 1)
+	var iz1 := clampi(ceili(cz + R), 1, SIZE - 1)
+	var changed := false
+	for iz in range(iz0, iz1 + 1):
+		for ix in range(ix0, ix1 + 1):
+			var d := Vector2(ix - cx, iz - cz).length()
+			if d > R:
+				continue
+			var i := iz * n + ix
+			var k := 1.0 - d / R
+			var floor_h := orig_heights[i] - max_depth()
+			var nh: float = max(floor_h, heights[i] - strength * k * k * 2.0)
+			if nh < heights[i] - 0.001:
+				heights[i] = nh
+				changed = true
+	if not changed:
+		return false
+	GameState.stats.dug += 1
+	# Перестраиваем затронутые куски (с запасом в клетку для нормалей).
+	var per_side := SIZE / CHUNK
+	for chz in range(clampi((iz0 - 2) / CHUNK, 0, per_side - 1), clampi((iz1 + 2) / CHUNK, 0, per_side - 1) + 1):
+		for chx in range(clampi((ix0 - 2) / CHUNK, 0, per_side - 1), clampi((ix1 + 2) / CHUNK, 0, per_side - 1) + 1):
+			_chunks[chz * per_side + chx].mesh = _chunk_mesh(chx, chz)
+	_hmap.map_data = heights
+	# Трава в яме пропадает.
+	for gz in range(floori((p.z - R) / 4.0), floori((p.z + R) / 4.0) + 1):
+		for gx in range(floori((p.x - R) / 4.0), floori((p.x + R) / 4.0) + 1):
+			for gi in _grass_cells.get(Vector2i(gx, gz), []):
+				var t := _grass.get_instance_transform(gi)
+				if Vector2(t.origin.x, t.origin.z).distance_to(Vector2(p.x, p.z)) < R:
+					_grass.set_instance_transform(gi, Transform3D(Basis().scaled(Vector3.ZERO), t.origin))
+	# Предметы и животные не должны висеть в воздухе.
+	for it in items:
+		var np: Vector3 = it.node.position
+		it.node.position.y = min(np.y, ground(np.x, np.z))
+	return true
 
 
 func _try_takeoff() -> void:
@@ -900,10 +1211,35 @@ func _try_takeoff() -> void:
 
 func _leave() -> void:
 	leaving = true
-	GameState.cargo.ore += trip.ore
-	GameState.cargo.samples += trip.samples
+	for id in trip.minerals:
+		GameState.add_item(id, int(trip.minerals[id]))
+		GameState.stats.minerals += int(trip.minerals[id])
+	for s in trip.samples:
+		GameState.samples.append(s)
+	GameState.stats.samples += trip.samples.size()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	get_tree().change_scene_to_file("res://scenes/system/star_system.tscn")
+
+
+## Капитан погиб: конец игры, титры во славу исследователя.
+func _die() -> void:
+	leaving = true
+	GameState.death = {"planet": planet.name, "biome": B.name}
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	get_tree().change_scene_to_file("res://scenes/ui/credits.tscn")
+
+
+func _notify(text: String, col: Color) -> void:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_color_override("font_color", col)
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_feed.add_child(l)
+	_feed_time = 2.5
+	while _feed.get_child_count() > 5:
+		var old := _feed.get_child(0)
+		_feed.remove_child(old)
+		old.queue_free()
 
 
 # ---------- Интерфейс ----------
@@ -940,12 +1276,12 @@ func _build_ui() -> void:
 
 	var help := Label.new()
 	help.theme = theme
-	help.text = "WASD: идти, Shift: бег, пробел: ранец\nМышь: обзор, ЛКМ или F: выстрел\nE у корабля: взлететь, Esc: освободить курсор"
+	help.text = "WASD: идти, Shift: бег, пробел: ранец\nМышь: обзор, ЛКМ или F: применить инструмент\n1: бластер, 2: лапатрон (копать и добывать), колесо: сменить\nH: аптечка, E у корабля: взлететь, Esc: курсор"
 	help.add_theme_color_override("font_color", Color(0.9, 0.92, 1.0))
 	help.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
 	help.anchor_left = 1.0
 	help.anchor_right = 1.0
-	help.offset_left = -560
+	help.offset_left = -760
 	help.offset_right = -16
 	help.offset_top = 16
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -959,6 +1295,33 @@ func _build_ui() -> void:
 	cross.offset_left = -6
 	cross.offset_top = -14
 	layer.add_child(cross)
+
+	_tool_label = Label.new()
+	_tool_label.theme = theme
+	_tool_label.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
+	_tool_label.anchor_left = 0.5
+	_tool_label.anchor_right = 0.5
+	_tool_label.anchor_top = 1.0
+	_tool_label.anchor_bottom = 1.0
+	_tool_label.offset_left = -300
+	_tool_label.offset_right = 300
+	_tool_label.offset_top = -44
+	_tool_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	layer.add_child(_tool_label)
+
+	_feed = VBoxContainer.new()
+	_feed.theme = theme
+	_feed.anchor_left = 1.0
+	_feed.anchor_right = 1.0
+	_feed.anchor_top = 1.0
+	_feed.anchor_bottom = 1.0
+	_feed.offset_left = -560
+	_feed.offset_right = -20
+	_feed.offset_top = -260
+	_feed.offset_bottom = -20
+	_feed.alignment = BoxContainer.ALIGNMENT_END
+	_feed.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(_feed)
 
 	var radar := PlanetRadar.new()
 	radar.surface = self
@@ -980,7 +1343,7 @@ func _build_ui() -> void:
 	_prompt.anchor_bottom = 1.0
 	_prompt.offset_left = -300
 	_prompt.offset_right = 300
-	_prompt.offset_top = -80
+	_prompt.offset_top = -84
 	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	layer.add_child(_prompt)
 

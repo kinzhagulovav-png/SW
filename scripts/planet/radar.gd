@@ -2,7 +2,8 @@ class_name PlanetRadar
 extends Control
 ## Круглый радар на поверхности планеты. Верх радара: куда смотрит игрок.
 ## Корабль: жёлтый значок (за пределами дальности прижимается к краю стрелкой),
-## животные: красные точки, ресурсы: голубые и зелёные.
+## животные: красные точки, минералы: точки своего цвета, образцы: зелёные.
+## Со сканером недр видны богатые жилы (оранжевые пятна).
 
 const RANGE := 70.0
 const RADIUS := 105.0
@@ -53,10 +54,27 @@ func _draw() -> void:
 	var n: Vector2 = _to_radar(surface.player.position + Vector3(0, 0, -1000)).normalized() * (RADIUS - 10.0)
 	draw_string(_font, c + n + Vector2(-6, 7), "С", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.75, 0.85, 1.0, 0.8))
 
+	# Сканер недр: оранжевые пятна над богатыми жилами.
+	if GameState.has_device("scanner"):
+		var pp: Vector3 = surface.player.position
+		var step := 6.0
+		var x := -RANGE
+		while x <= RANGE:
+			var z := -RANGE
+			while z <= RANGE:
+				var wx := snappedf(pp.x, step) + x
+				var wz := snappedf(pp.z, step) + z
+				if surface._vein(wx, wz) > surface.VEIN_LEVEL:
+					var r: Vector2 = _to_radar(Vector3(wx, 0, wz))
+					if r.length() < RADIUS:
+						draw_circle(c + r, 3.0, Color(1.0, 0.6, 0.2, 0.45))
+				z += step
+			x += step
+
 	for it in surface.items:
 		var r: Vector2 = _to_radar(it.node.global_position)
 		if r.length() < RADIUS:
-			var col := Color("#5fe0ff") if it.type == "ore" else Color("#9aff6a")
+			var col: Color = Items.MINERALS[it.mineral].color if it.type == "mineral" else Color("#9aff6a")
 			draw_circle(c + r, 2.5, col)
 	for b in surface.beasts:
 		var r: Vector2 = _to_radar(b.node.global_position)

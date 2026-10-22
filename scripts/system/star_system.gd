@@ -29,6 +29,8 @@ var _money_label: Label
 var _status_label: Label
 var _cargo_label: Label
 var _land_button: Button
+var _station_button: Button
+var _menu: ShipMenu
 var _target_marker: MeshInstance3D
 var _glow_tex: GradientTexture2D
 
@@ -260,7 +262,7 @@ func _build_station() -> void:
 		var l := _glow(Color("#6fb7ff"), 1.4, 2.0)
 		l.position = Vector3(cos(la) * 5.7, 0.7, sin(la) * 5.7)
 		station.add_child(l)
-	var lbl := _label3d("Станция", Color("#6fb7ff"))
+	var lbl := _label3d("Научная станция", Color("#6fb7ff"))
 	lbl.position = Vector3(0, 0, 10)
 	station.add_child(lbl)
 
@@ -507,7 +509,10 @@ func _process(delta: float) -> void:
 	_update_camera(delta, false)
 	_time_label.text = GameState.time_text()
 	_money_label.text = "ПОТОМ: %d" % GameState.money
-	_cargo_label.text = "Трюм: руда %d, образцы %d" % [GameState.cargo.ore, GameState.cargo.samples]
+	var total := 0
+	for id in GameState.inventory:
+		total += int(GameState.inventory[id])
+	_cargo_label.text = "Трюм: %d, образцы: %d" % [total, GameState.samples.size()]
 
 
 func _target_info() -> Dictionary:
@@ -559,8 +564,16 @@ func _update_camera(delta: float, snap: bool) -> void:
 # ---------- Ввод ----------
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and event.keycode == KEY_L:
-		_land()
+	if _menu.visible:
+		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		match event.keycode:
+			KEY_L:
+				_land()
+			KEY_I:
+				_menu.open("ship")
+			KEY_N:
+				_open_station()
 		return
 	if event is InputEventMouseButton and event.pressed:
 		match event.button_index:
@@ -673,6 +686,15 @@ func _build_ui() -> void:
 	_land_button.add_theme_color_override("font_color", Color("#ffbf55"))
 	_land_button.pressed.connect(_land)
 	brow.add_child(_land_button)
+	_station_button = Button.new()
+	_station_button.text = "  Научная станция (N)  "
+	_station_button.add_theme_color_override("font_color", Color("#6fdcff"))
+	_station_button.pressed.connect(_open_station)
+	brow.add_child(_station_button)
+	var hold := Button.new()
+	hold.text = "  Корабль: трюм и лаборатория (I)  "
+	hold.pressed.connect(func(): _menu.open("ship"))
+	brow.add_child(hold)
 	for spec in [["−", 1.25], ["+", 1.0 / 1.25]]:
 		var b := Button.new()
 		b.text = spec[0]
@@ -682,7 +704,7 @@ func _build_ui() -> void:
 		brow.add_child(b)
 
 	var help := Label.new()
-	help.text = "Клик по планете, станции или пустому месту: лететь туда.\nКолесо мыши: масштаб. У планеты: L или «Высадиться».\nВремя в галактике идёт постоянно."
+	help.text = "Клик по планете, станции или пустому месту: лететь туда.\nКолесо мыши: масштаб. У планеты: L или «Высадиться».\nI: трюм, крафт и лаборатория. N: научная станция.\nВремя в галактике идёт постоянно."
 	help.add_theme_color_override("font_color", Color(0.75, 0.8, 0.9))
 	help.anchor_left = 1.0
 	help.anchor_right = 1.0
@@ -692,13 +714,17 @@ func _build_ui() -> void:
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	layer.add_child(help)
 
+	_menu = ShipMenu.new()
+	layer.add_child(_menu)
+
 
 func _set_status() -> void:
 	if _status_label == null:
 		return
 	_land_button.visible = near.begins_with("planet")
+	_station_button.visible = near == "station"
 	if near == "station":
-		_status_label.text = "Пристыкованы к станции."
+		_status_label.text = "Пристыкованы к научной станции."
 	elif near.begins_with("planet"):
 		var p: Dictionary = planets[int(near.substr(6))]
 		_status_label.text = "На орбите планеты %s (%s). Можно высаживаться." % [p.name, Biomes.DATA[p.biome].name]
@@ -709,6 +735,11 @@ func _set_status() -> void:
 
 
 # ---------- Высадка ----------
+
+func _open_station() -> void:
+	if near == "station":
+		_menu.open("station")
+
 
 func _land() -> void:
 	if not near.begins_with("planet"):
