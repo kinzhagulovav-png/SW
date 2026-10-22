@@ -14,6 +14,7 @@ const CHUNK := 32 ## размер куска поверхности в клет�
 const VEIN_LEVEL := 0.42
 const REACH := 6.5 ## дальность лапатрона
 const INTERIOR := Vector3(0, -420, 0) ## где стоит внутренность корабля (глубоко под землёй)
+const SHIP_SPAWN := Vector3(0, 1.0, 4.4) ## где капитан появляется на борту (у шлюза)
 
 var planet: Dictionary
 var B: Dictionary
@@ -919,7 +920,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			_select_tool(1 - tool_index)
 	elif event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
+		# По положению клавиши: работает и в русской раскладке.
+		var key: int = event.physical_keycode if event.physical_keycode != KEY_NONE else event.keycode
+		match key:
 			KEY_ESCAPE:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			KEY_E:
@@ -937,7 +940,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				_open_base()
 			KEY_TAB, KEY_G, KEY_T, KEY_V, KEY_B, KEY_X:
 				if not inside:
-					squad.command(event.keycode)
+					squad.command(key)
 
 
 func _physics_process(delta: float) -> void:
@@ -947,17 +950,17 @@ func _physics_process(delta: float) -> void:
 	cam.rotation.x = pitch
 	var input := Vector2.ZERO
 	if not _menu.visible:
-		if Input.is_key_pressed(KEY_W): input.y -= 1
-		if Input.is_key_pressed(KEY_S): input.y += 1
-		if Input.is_key_pressed(KEY_A): input.x -= 1
-		if Input.is_key_pressed(KEY_D): input.x += 1
-	var run := Input.is_key_pressed(KEY_SHIFT)
+		if Input.is_physical_key_pressed(KEY_W): input.y -= 1
+		if Input.is_physical_key_pressed(KEY_S): input.y += 1
+		if Input.is_physical_key_pressed(KEY_A): input.x -= 1
+		if Input.is_physical_key_pressed(KEY_D): input.x += 1
+	var run := Input.is_physical_key_pressed(KEY_SHIFT)
 	var in_liquid: bool = not inside and not water.is_empty() and player.position.y < level + 0.2 and not water.get("ice", false)
 	var speed := (RUN if run else WALK) * People.boots_mult(GameState.gear("boots")) * (0.55 if in_liquid and not water.get("lava", false) else 1.0)
 	var dir := (player.transform.basis * Vector3(input.x, 0, input.y)).normalized()
 	player.velocity.x = dir.x * speed
 	player.velocity.z = dir.z * speed
-	if Input.is_key_pressed(KEY_SPACE) and jet > 0.0 and not _menu.visible:
+	if Input.is_physical_key_pressed(KEY_SPACE) and jet > 0.0 and not _menu.visible:
 		player.velocity.y = min(player.velocity.y + 30.0 * delta, 9.0)
 		jet = max(0.0, jet - delta)
 	elif player.is_on_floor():
@@ -966,6 +969,10 @@ func _physics_process(delta: float) -> void:
 	if in_liquid and not water.get("lava", false):
 		player.velocity.y = max(player.velocity.y, 0.0) if player.position.y < level - 0.6 else player.velocity.y
 	player.move_and_slide()
+	if inside and (player.position.y < INTERIOR.y - 2.0 or player.position.y > INTERIOR.y + 4.0):
+		# Провалился сквозь пол или застрял в потолке: обратно к шлюзу.
+		player.position = INTERIOR + SHIP_SPAWN
+		player.velocity = Vector3.ZERO
 	if not inside:
 		player.position.x = clamp(player.position.x, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
 		player.position.z = clamp(player.position.z, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
@@ -1006,7 +1013,7 @@ func _process(delta: float) -> void:
 	for b in beasts:
 		_update_beast(b, delta)
 	shot_cd -= delta
-	var use := not inside and (Input.is_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED))
+	var use := not inside and (Input.is_physical_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED))
 	if use and shot_cd <= 0.0:
 		if tool_index == 0:
 			var w := GameState.gear("weapon")
@@ -1884,8 +1891,10 @@ func _open_lab() -> void:
 
 func _enter_ship() -> void:
 	inside = true
-	player.position = INTERIOR + Vector3(0, 1.0, 5.2)
+	_menu.hide()
+	player.position = INTERIOR + SHIP_SPAWN
 	player.velocity = Vector3.ZERO
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	yaw = 0.0
 	pitch = 0.0
 	tool.visible = false
