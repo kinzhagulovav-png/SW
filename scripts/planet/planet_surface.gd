@@ -61,6 +61,10 @@ var _rad_bar: ProgressBar
 var _armor_bar: ProgressBar
 var _env_label: Label
 var _env: Environment
+var _menu: ShipMenu
+var _scientist: Node3D
+var _lab_glow: Array[MeshInstance3D] = []
+var _lab_time := 0.0
 
 var _hp_bar: ProgressBar
 var _jet_bar: ProgressBar
@@ -941,17 +945,18 @@ func _physics_process(delta: float) -> void:
 	player.rotation.y = yaw
 	cam.rotation.x = pitch
 	var input := Vector2.ZERO
-	if Input.is_key_pressed(KEY_W): input.y -= 1
-	if Input.is_key_pressed(KEY_S): input.y += 1
-	if Input.is_key_pressed(KEY_A): input.x -= 1
-	if Input.is_key_pressed(KEY_D): input.x += 1
+	if not _menu.visible:
+		if Input.is_key_pressed(KEY_W): input.y -= 1
+		if Input.is_key_pressed(KEY_S): input.y += 1
+		if Input.is_key_pressed(KEY_A): input.x -= 1
+		if Input.is_key_pressed(KEY_D): input.x += 1
 	var run := Input.is_key_pressed(KEY_SHIFT)
 	var in_liquid: bool = not inside and not water.is_empty() and player.position.y < level + 0.2 and not water.get("ice", false)
 	var speed := (RUN if run else WALK) * (0.55 if in_liquid and not water.get("lava", false) else 1.0)
 	var dir := (player.transform.basis * Vector3(input.x, 0, input.y)).normalized()
 	player.velocity.x = dir.x * speed
 	player.velocity.z = dir.z * speed
-	if Input.is_key_pressed(KEY_SPACE) and jet > 0.0:
+	if Input.is_key_pressed(KEY_SPACE) and jet > 0.0 and not _menu.visible:
 		player.velocity.y = min(player.velocity.y + 30.0 * delta, 9.0)
 		jet = max(0.0, jet - delta)
 	elif player.is_on_floor():
@@ -1054,7 +1059,7 @@ func _process(delta: float) -> void:
 		if hit != null and (hit as Vector3).y < orig_heights_at(hit) - max_depth() + 0.05:
 			hint = "Глубже лапатрон не берёт"
 	if inside:
-		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
+		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "lab": "E: научная работа (переработка, сборка, изучение образцов)", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
 	elif to_ship < TAKEOFF_DIST:
 		hint = "E: подняться на корабль"
 	_prompt.text = hint
@@ -1262,6 +1267,8 @@ func _interact() -> void:
 				_exit_ship()
 			"cockpit":
 				_leave()
+			"lab":
+				_open_lab()
 	elif ship.global_position.distance_to(player.global_position) < TAKEOFF_DIST:
 		_enter_ship()
 
@@ -1407,7 +1414,7 @@ func _lamp(pos: Vector3, col: Color, energy: float, rng_m: float) -> void:
 ## Внутри корабля: коридор от шлюза к кабине, сбоку отсек ремонта оборудования.
 ## Отсек стоит глубоко под поверхностью, его не видно снаружи.
 func _build_interior() -> void:
-	var wall := ShipBuilder.metal(Color("#b4bcc8"), 0.6, 0.45)
+	var wall := ShipBuilder.metal(Color("#8a929e"), 0.5, 0.55)
 	var dark := ShipBuilder.metal(Color("#3a404a"), 0.7, 0.5)
 	var floor_m := ShipBuilder.metal(Color("#4a505c"), 0.8, 0.35)
 	var strip := ShipBuilder.unshaded(Color(0.6, 1.6, 2.4))
@@ -1416,7 +1423,10 @@ func _build_interior() -> void:
 	_solid(Vector3(14, 0.3, 22), Vector3(0, -0.15, -2), floor_m)
 	_solid(Vector3(14, 0.3, 22), Vector3(0, 3.0, -2), dark)
 	# Коридор: x от -1.5 до 1.5, z от -6 до 7.
-	_solid(Vector3(0.3, 3, 13), Vector3(-1.65, 1.5, 0.5), wall)       # левая стена
+	_solid(Vector3(0.3, 3, 3), Vector3(-1.65, 1.5, -4.5), wall)       # левая стена до двери
+	_solid(Vector3(0.3, 3, 8), Vector3(-1.65, 1.5, 3.0), wall)        # левая стена после двери
+	_solid(Vector3(0.3, 0.6, 2.0), Vector3(-1.65, 2.7, -2.0), wall)   # над дверью
+	_build_lab(wall, dark)
 	_solid(Vector3(0.3, 3, 3), Vector3(1.65, 1.5, -4.5), wall)        # правая стена до двери
 	_solid(Vector3(0.3, 3, 5), Vector3(1.65, 1.5, 4.5), wall)         # правая стена после двери
 	_solid(Vector3(0.3, 0.6, 2.0), Vector3(1.65, 2.7, -2.0), wall)    # над дверью
@@ -1468,6 +1478,149 @@ func _build_interior() -> void:
 	_lamp(Vector3(0, 2.3, -8.5), Color(1.0, 0.85, 0.6), 1.2, 6.0)
 
 
+## Научный отсек: слева от коридора, напротив отсека ремонта.
+## Здесь стоит учёный (если он есть в экипаже), перерабатывают минералы и изучают образцы.
+func _build_lab(wall: Material, dark: Material) -> void:
+	_solid(Vector3(5.4, 3, 0.3), Vector3(-4.5, 1.5, -3.15), wall)
+	_solid(Vector3(5.4, 3, 0.3), Vector3(-4.5, 1.5, 3.15), wall)
+	_solid(Vector3(0.3, 3, 6.6), Vector3(-7.15, 1.5, 0), wall)
+	_sign("Научный отсек", Vector3(-1.4, 2.55, -2.0), PI / 2.0, Color("#9aff6a"))
+	var white := ShipBuilder.metal(Color("#e8ecf0"), 0.2, 0.35)
+	var glass := StandardMaterial3D.new()
+	glass.albedo_color = Color(0.6, 0.9, 1.0, 0.35)
+	glass.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass.roughness = 0.05
+	# Лабораторный стол вдоль дальней стены с микроскопом и контейнерами образцов.
+	_deco(Vector3(0.9, 0.9, 4.0), Vector3(-6.5, 0.45, 0.4), white)
+	_deco(Vector3(0.95, 0.05, 4.05), Vector3(-6.5, 0.92, 0.4), dark)
+	_deco(Vector3(0.25, 0.1, 0.3), Vector3(-6.4, 1.0, -0.6), dark)                 # основание микроскопа
+	_deco(Vector3(0.06, 0.4, 0.06), Vector3(-6.5, 1.2, -0.6), dark)
+	_deco(Vector3(0.1, 0.1, 0.22), Vector3(-6.42, 1.4, -0.6), dark).rotation.z = 0.6
+	_deco(Vector3(0.02, 0.5, 0.9), Vector3(-6.94, 1.6, 1.2), ShipBuilder.unshaded(Color(0.4, 2.2, 1.0)))  # экран анализа
+	for i in 5:
+		var jar := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.09
+		cm.bottom_radius = 0.09
+		cm.height = 0.28
+		cm.material = glass
+		jar.mesh = cm
+		jar.position = INTERIOR + Vector3(-6.6, 1.09, 1.4 + i * 0.22)
+		add_child(jar)
+		var core := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 0.05
+		sm.height = 0.1
+		sm.material = ShipBuilder.unshaded(Color(0.6, 2.4, 0.8) if i % 2 == 0 else Color(1.8, 0.8, 2.4))
+		core.mesh = sm
+		core.position = jar.position
+		add_child(core)
+		_lab_glow.append(core)
+	# Установка переработки минералов: печь с горячим окном и бункер.
+	_solid(Vector3(1.4, 2.0, 1.2), Vector3(-5.2, 1.0, -2.3), dark)
+	_deco(Vector3(0.7, 0.5, 0.05), Vector3(-5.2, 1.1, -1.68), ShipBuilder.unshaded(Color(3.0, 1.2, 0.3)))
+	_deco(Vector3(0.9, 0.4, 0.9), Vector3(-5.2, 2.2, -2.3), white)
+	_sign("Переработка минералов", Vector3(-5.2, 2.65, -1.65), 0.0, Color("#ffbf55"))
+	_lamp(Vector3(-4.5, 2.5, 0.5), Color(0.85, 1.0, 0.9), 1.5, 7.0)
+	_lamp(Vector3(-5.2, 1.0, -1.2), Color(1.0, 0.55, 0.2), 0.8, 3.0)
+	# Учёный.
+	var sci := GameState.best_scientist()
+	if sci.is_empty():
+		_sign("Место учёного свободно.\nНаймите учёного на научной станции.", Vector3(-5.5, 1.6, 2.4), PI, Color(0.8, 0.85, 0.95))
+	else:
+		_scientist = _make_scientist()
+		_scientist.position = INTERIOR + Vector3(-5.7, 0, 0.6)
+		_scientist.rotation.y = PI / 2.0
+		add_child(_scientist)
+		_sign("%s · учёный, навык %d" % [sci.name, sci.skill], Vector3(-5.7, 2.15, 0.6), PI / 2.0, Color("#9aff6a"))
+
+
+func _make_scientist() -> Node3D:
+	var g := Node3D.new()
+	var coat := ShipBuilder.metal(Color("#f0f2f4"), 0.0, 0.7)
+	var skin := ShipBuilder.metal(Color("#d8a888"), 0.0, 0.6)
+	var dark := ShipBuilder.metal(Color("#2a3040"), 0.1, 0.6)
+	var body := MeshInstance3D.new()
+	var cm := CapsuleMesh.new()
+	cm.radius = 0.24
+	cm.height = 1.1
+	cm.material = coat
+	body.mesh = cm
+	body.position.y = 1.05
+	g.add_child(body)
+	for s in [-0.12, 0.12]:
+		var leg := MeshInstance3D.new()
+		var lm := CylinderMesh.new()
+		lm.top_radius = 0.08
+		lm.bottom_radius = 0.07
+		lm.height = 0.6
+		lm.material = dark
+		leg.mesh = lm
+		leg.position = Vector3(s, 0.3, 0)
+		g.add_child(leg)
+	var head := MeshInstance3D.new()
+	var hm := SphereMesh.new()
+	hm.radius = 0.15
+	hm.height = 0.3
+	hm.material = skin
+	head.mesh = hm
+	head.position.y = 1.78
+	head.name = "Head"
+	g.add_child(head)
+	var visor := MeshInstance3D.new()
+	var vm := BoxMesh.new()
+	vm.size = Vector3(0.22, 0.05, 0.05)
+	vm.material = ShipBuilder.unshaded(Color(0.4, 1.8, 2.6))
+	visor.mesh = vm
+	visor.position = Vector3(0, 0.02, -0.13)
+	head.add_child(visor)
+	for s in [-1.0, 1.0]:
+		var arm := MeshInstance3D.new()
+		var am := CapsuleMesh.new()
+		am.radius = 0.06
+		am.height = 0.6
+		am.material = coat
+		arm.mesh = am
+		arm.position = Vector3(s * 0.3, 1.2, -0.12)
+		arm.rotation.x = 0.7
+		g.add_child(arm)
+	return g
+
+
+func _animate_lab(delta: float) -> void:
+	_lab_time += delta
+	for i in _lab_glow.size():
+		var k := 1.0 + sin(_lab_time * 2.0 + i) * 0.25
+		_lab_glow[i].scale = Vector3.ONE * k
+	if _scientist:
+		_scientist.position.y = INTERIOR.y + sin(_lab_time * 1.3) * 0.01
+		var head: Node3D = _scientist.get_node("Head")
+		# Учёный смотрит на капитана, если тот рядом, иначе в микроскоп.
+		var to := player.position - _scientist.position
+		var want := atan2(-to.x, -to.z) - _scientist.rotation.y if to.length() < 4.0 else sin(_lab_time * 0.5) * 0.3
+		head.rotation.y = lerp_angle(head.rotation.y, clamp(wrapf(want, -PI, PI), -1.2, 1.2), min(1.0, delta * 3.0))
+
+
+## Добыча с прогулки переходит в трюм, как только капитан поднялся на борт.
+func _unload_trip() -> void:
+	var count := 0
+	for id in trip.minerals:
+		GameState.add_item(id, int(trip.minerals[id]))
+		GameState.stats.minerals += int(trip.minerals[id])
+		count += int(trip.minerals[id])
+	for s in trip.samples:
+		GameState.samples.append(s)
+	GameState.stats.samples += trip.samples.size()
+	if count > 0 or not trip.samples.is_empty():
+		_notify("В трюм: минералов %d, образцов %d" % [count, trip.samples.size()], Color("#ffbf55"))
+	trip = {"minerals": {}, "samples": []}
+
+
+func _open_lab() -> void:
+	_menu.open("lab")
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
 func _enter_ship() -> void:
 	inside = true
 	player.position = INTERIOR + Vector3(0, 1.0, 5.2)
@@ -1481,6 +1634,7 @@ func _enter_ship() -> void:
 	_env.fog_enabled = false
 	_env.ambient_light_energy = 0.3
 	_notify("Вы на корабле. Кислород пополняется.", Color("#9ad8ff"))
+	_unload_trip()
 
 
 func _exit_ship() -> void:
@@ -1501,6 +1655,8 @@ func _ship_zone() -> String:
 	var p := player.position - INTERIOR
 	if p.x > 1.8:
 		return "bay"
+	if p.x < -1.8:
+		return "lab"
 	if p.z < -6.2:
 		return "cockpit"
 	if p.z > 4.6:
@@ -1521,6 +1677,7 @@ func _suit_inside(delta: float) -> void:
 		suit.armor = min(100.0, suit.armor + rate * delta)
 	else:
 		t_bay = 0.0
+	_animate_lab(delta)
 	_bay_ring.rotation.y += delta * (0.5 + t_bay * 0.3)
 	_bay_light.light_energy = min(3.0, t_bay * 0.4) if zone == "bay" else 0.0
 	for key in ["oxygen", "rad", "armor"]:
@@ -1613,6 +1770,13 @@ func _build_ui() -> void:
 	_feed.alignment = BoxContainer.ALIGNMENT_END
 	_feed.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(_feed)
+
+	_menu = ShipMenu.new()
+	_menu.theme = theme
+	_menu.visibility_changed.connect(func():
+		if not _menu.visible and not leaving:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED)
+	layer.add_child(_menu)
 
 	var radar := PlanetRadar.new()
 	_radar = radar

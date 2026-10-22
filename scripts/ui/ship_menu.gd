@@ -23,12 +23,7 @@ func _ready() -> void:
 	style.set_corner_radius_all(12)
 	style.set_content_margin_all(18)
 	add_theme_stylebox_override("panel", style)
-	set_anchors_preset(Control.PRESET_CENTER)
 	custom_minimum_size = Vector2(980, 640)
-	offset_left = -490
-	offset_right = 490
-	offset_top = -330
-	offset_bottom = 330
 	visible = false
 
 	var col := VBoxContainer.new()
@@ -62,6 +57,9 @@ func open(new_mode: String) -> void:
 	_status.text = ""
 	visible = true
 	refresh()
+	# Окно всегда по центру экрана.
+	size = custom_minimum_size
+	position = (get_viewport_rect().size - size) / 2.0
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -82,6 +80,13 @@ func refresh() -> void:
 		_page("Переработка", func(box): _fill_recipes(box, Items.MATERIALS, "Переработать", 0))
 		_page("Сборка", func(box): _fill_recipes(box, Items.BASICS, "Собрать", 0))
 		_page("Лаборатория", _fill_lab)
+	elif mode == "lab":
+		var sci := GameState.best_scientist()
+		_title.text = "Научный отсек · %s" % ("учёный %s" % sci.name if not sci.is_empty() else "учёного нет")
+		_page("Переработка", func(box): _fill_recipes(box, Items.MATERIALS, "Переработать", 0))
+		_page("Сборка", func(box): _fill_recipes(box, Items.BASICS, "Собрать", 0))
+		_page("Образцы", _fill_lab)
+		_page("Трюм", _fill_hold)
 	else:
 		_title.text = "Научная станция · ПОТОМ: %d" % GameState.money
 		_page("Приборы и вещи", func(box): _fill_recipes(box, Items.DEVICES, "Изготовить", 1))
@@ -158,7 +163,7 @@ func _fill_hold(box: VBoxContainer) -> void:
 # ---------- Рецепты: переработка, сборка, приборы ----------
 
 func _fill_recipes(box: VBoxContainer, table: Dictionary, verb: String, price_mode: int) -> void:
-	if mode == "ship":
+	if mode != "station":
 		_label(box, "Минералы → материалы → базовые элементы. Приборы и вещи из базовых элементов делают только на научной станции.", Color(0.7, 0.75, 0.85), 18)
 	else:
 		_label(box, "Станция изготовит прибор из ваших базовых элементов за плату в ПОТОМ.", Color(0.7, 0.75, 0.85), 18)
