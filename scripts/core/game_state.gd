@@ -7,6 +7,10 @@ signal hour_passed(hour: int)
 signal lab_finished(sample: Dictionary)
 ## Навык персонажа вырос (person: капитан или член экипажа).
 signal skill_up(person: Dictionary, skill: String, level: int)
+## Новости галактики: поломки на базах, доставки, налёты, атаки на корабль.
+signal news(text: String, color: Color)
+## Армия напала на базу, на которой сейчас капитан (сцена планеты выводит солдат).
+signal raid_started(base_key: String, faction: String, strength: int)
 
 const HOURS_PER_SECOND := 1.0
 const START_HOURS := 8.0
@@ -42,6 +46,15 @@ var galaxy_seed: int = 0
 var current_planet: Dictionary = {}
 ## Где был корабль в системе перед высадкой, чтобы вернуть его туда же.
 var system_state: Dictionary = {}
+## Базы на планетах: ключ — str(seed планеты), значение — BaseData.new_base.
+var bases: Dictionary = {}
+## Заказы в пути: {"type": "module"/"masters", "base", "id"/"uid", "from", "faction", "eta"}.
+var orders: Array[Dictionary] = []
+## Войны: ключ места (station:…/colony:…) → {"name", "since", "next_raid"}.
+var wars: Dictionary = {}
+var news_log: Array[String] = []
+## Капитан сейчас на поверхности планеты (current_planet).
+var on_planet := false
 
 var _last_hour: int = int(START_HOURS)
 
@@ -68,6 +81,11 @@ func reset() -> void:
 	stats = {"minerals": 0, "samples": 0, "landings": 0, "beasts": 0, "dug": 0}
 	current_planet = {}
 	system_state = {}
+	bases = {}
+	orders.clear()
+	wars = {}
+	news_log.clear()
+	on_planet = false
 	death = {}
 	galaxy_seed = randi()
 
@@ -77,6 +95,7 @@ func _process(delta: float) -> void:
 	while int(hours) > _last_hour:
 		_last_hour += 1
 		hour_passed.emit(_last_hour)
+		_simulate_hour()
 	if not lab.is_empty() and hours >= float(lab.done_at):
 		_finish_study()
 
@@ -172,6 +191,7 @@ func _new_ship() -> Dictionary:
 			"radar": {"id": "radar", "mk": 1, "cond": 85},
 		},
 		"fuel": 45.0,
+		"hull_hp": float(ShipData.ARMOR.skif),
 	}
 
 
@@ -202,7 +222,13 @@ func cargo_capacity() -> int:
 	return int(hull().capacity) - equip_volume()
 
 
+func max_hull_hp() -> float:
+	return float(ShipData.ARMOR[ship.hull])
+
+
 static func _category(id: String) -> String:
+	if BaseData.is_part(id):
+		return "part"
 	if Items.MINERALS.has(id):
 		return "mineral"
 	if Items.MATERIALS.has(id):
@@ -336,3 +362,229 @@ func _finish_study() -> void:
 				add_xp(sci, "science", 2 * int(s.level))
 			lab_finished.emit(s)
 			return
+
+
+# ---------- Базы, заказы, войны (каждый час времени галактики) ----------
+
+func say(text: String, color: Color = Color("#ffbf55")) -> void:
+	news_log.append("%s · %s" % [time_text(), text])
+	if news_log.size() > 30:
+		news_log.remove_at(0)
+	news.emit(text, color)
+
+
+func base_here() -> Dictionary:
+	if current_planet.is_empty():
+		return {}
+	return bases.get(str(current_planet.seed), {})
+
+
+static func _cap(t: String) -> String:
+	return t.substr(0, 1).to_upper() + t.substr(1)
+
+
+func base_name(b: Dictionary) -> String:
+	return "база на %s" % b.planet.name
+
+
+func at_war(key: String) -> bool:
+	return wars.has(key)
+
+
+func declare_war(key: String, faction: String) -> void:
+	if wars.has(key):
+		return
+	wars[key] = {"name": faction, "since": hours, "next_raid": hours + randf_range(40.0, 80.0)}
+	say("%s объявляет вам войну! Их армия будет нападать на ваши базы и корабль." % faction, Color("#ff6a4a"))
+
+
+## Цена мира: растёт со временем войны, Дипломатия снижает.
+func peace_price(key: String) -> int:
+	var w: Dictionary = wars[key]
+	var days := (hours - float(w.since)) / 24.0
+	return int((2000.0 + days * 150.0) * max(0.4, 1.0 - 0.06 * lvl("diplomacy")))
+
+
+func make_peace(key: String) -> void:
+	var w: Dictionary = wars[key]
+	wars.erase(key)
+	hero_xp("diplomacy", 4)
+	say("Заключён мир: %s больше не воюет с вами." % w.name, Color("#9aff6a"))
+
+
+## Мастера чинят модуль: всё как новое, ресурс эксплуатации восстановлен.
+func masters_repair(b: Dictionary, m: Dictionary) -> void:
+	m.worn = 0.0
+	m.life = float(BaseData.MODULES[m.id].life)
+	m.broken = false
+
+
+## Механик чинит хуже мастеров: состояние до 55–95% и срок службы немного падает.
+func mechanic_quality(mech: Dictionary) -> float:
+	return min(95.0, 55.0 + 4.0 * People.level(mech, "tech"))
+
+
+func best_mechanic() -> Dictionary:
+	var best := {}
+	for c in crew:
+		if c.role == "механик" and (best.is_empty() or People.level(c, "tech") > People.level(best, "tech")):
+			best = c
+	return best
+
+
+func _simulate_hour() -> void:
+	for key in bases.keys():
+		_simulate_base(key, bases[key])
+	for i in range(orders.size() - 1, -1, -1):
+		var o: Dictionary = orders[i]
+		if hours >= float(o.eta):
+			orders.remove_at(i)
+			_arrive(o)
+	for key in wars.keys():
+		var w: Dictionary = wars[key]
+		if hours >= float(w.next_raid):
+			w.next_raid = hours + randf_range(150.0, 300.0)
+			_raid(key, w)
+	# Патрули армий охотятся за кораблём, пока он в космосе.
+	if not on_planet and not wars.is_empty() and randf() < 0.01 * wars.size():
+		var w: Dictionary = wars.values()[randi() % wars.size()]
+		var sh := equip("shield")
+		var cut := ShipData.power(sh) * 0.06 if not sh.is_empty() else 0.0
+		var dmg := randf_range(12.0, 35.0) * (1.0 - cut)
+		ship.hull_hp = max(0.0, float(ship.hull_hp) - dmg)
+		say("Патруль армии «%s» атаковал корабль: −%d прочности (осталось %d)." % [w.name, int(dmg), int(ship.hull_hp)], Color("#ff6a4a"))
+		if float(ship.hull_hp) <= 0.0:
+			death = {"planet": "космосе", "biome": "корабль уничтожен армией «%s»" % w.name}
+			get_tree().change_scene_to_file("res://scenes/ui/credits.tscn")
+
+
+func _simulate_base(key: String, b: Dictionary) -> void:
+	var en := BaseData.energy(b)
+	var ratio: float = en.ratio
+	var name := base_name(b)
+	for m in b.modules:
+		if m.broken:
+			continue
+		var d: Dictionary = BaseData.MODULES[m.id]
+		# Работает только то, на что хватает энергии; электростанции работают всегда.
+		var load := 1.0 if int(d.energy) >= 0 else ratio
+		m.worn = float(m.worn) + load
+		var c := BaseData.cond(m)
+		var risk := 0.0 if c > 30.0 else (0.004 + (30.0 - c) * 0.0015)
+		if float(m.worn) >= float(m.life) or randf() < risk:
+			m.broken = true
+			say("%s: сломался модуль «%s». Нужен ремонт." % [_cap(name), d.name], Color("#ff8a6a"))
+	var acc: Dictionary = b.acc
+	var cap := BaseData.store_cap(b)
+	# Бур: минералы планеты.
+	var drills := BaseData.count_working(b, "drill")
+	var minerals: Array = Biomes.profile(b.planet).minerals
+	if drills > 0 and not minerals.is_empty():
+		acc.drill = float(acc.drill) + BaseData.DRILL_RATE * drills * ratio
+		while float(acc.drill) >= 1.0 and BaseData.store_used(b) < cap:
+			acc.drill = float(acc.drill) - 1.0
+			var id := Items.roll_mineral(_rng_base, b.planet.biome, 8.0, minerals)
+			if id != "":
+				BaseData.store_add(b, id, 1)
+	# Завод: первый материал, на который хватает минералов на складе.
+	var refs := BaseData.count_working(b, "refinery")
+	if refs > 0:
+		acc.refine = float(acc.refine) + BaseData.REFINE_RATE * refs * ratio
+		while float(acc.refine) >= 1.0:
+			acc.refine = float(acc.refine) - 1.0
+			for mid in Items.MATERIALS:
+				var need: Dictionary = Items.MATERIALS[mid].need
+				if Items.can_make(b.store, need):
+					for k in need:
+						BaseData.store_add(b, k, -int(need[k]))
+					BaseData.store_add(b, mid, 1)
+					break
+	# Мастерская: очередь запчастей (материалы уже списаны при заказе).
+	if not b.queue.is_empty() and BaseData.has_working(b, "workshop") and BaseData.has_working(b, "habitat"):
+		acc.part = float(acc.part) + ratio / BaseData.PART_HOURS
+		if float(acc.part) >= 1.0:
+			acc.part = 0.0
+			var pid: String = b.queue.pop_front()
+			BaseData.store_add(b, pid, 1)
+			say("%s: мастерская сделала «%s»." % [_cap(name), BaseData.part_name(pid)], Color("#9ad8ff"))
+	# Ремонт механиком.
+	if not b.job.is_empty() and hours >= float(b.job.done_at):
+		var m := BaseData.find(b, int(b.job.uid))
+		if not m.is_empty():
+			m.broken = false
+			m.life = float(m.life) * 0.92
+			m.worn = float(m.life) * (1.0 - float(b.job.quality) / 100.0)
+			say("%s: %s починил «%s» до %d%%." % [_cap(name), b.job.who, BaseData.MODULES[m.id].name, int(b.job.quality)], Color("#9aff6a"))
+		b.job = {}
+	# Мастера закончили работу и улетели.
+	if not b.visit.is_empty() and hours >= float(b.visit.until):
+		var v: Dictionary = b.visit
+		b.visit = {}
+		if not v.hostile:
+			var m := BaseData.find(b, int(v.uid))
+			if not m.is_empty():
+				masters_repair(b, m)
+				say("%s: мастера из «%s» починили «%s», как новый." % [_cap(name), v.faction, BaseData.MODULES[m.id].name], Color("#9aff6a"))
+
+
+var _rng_base := RandomNumberGenerator.new()
+
+
+func _arrive(o: Dictionary) -> void:
+	var b: Dictionary = bases.get(o.base, {})
+	if b.is_empty():
+		return
+	var name := base_name(b)
+	if o.type == "module":
+		BaseData.new_module(b, o.id)
+		say("%s: доставлен модуль «%s»." % [_cap(name), BaseData.MODULES[o.id].name], Color("#9ad8ff"))
+	elif o.type == "masters":
+		var m := BaseData.find(b, int(o.uid))
+		if m.is_empty() or at_war(o.from):
+			return
+		b.visit = {"uid": o.uid, "from": o.from, "faction": o.faction, "until": hours + 6.0 + 2.0 * float(BaseData.MODULES[m.id].tier),
+			"hostile": false, "parts": 2, "id": m.id}
+		say("%s: прилетели мастера из «%s» со своими запчастями и чинят «%s»." % [_cap(name), o.faction, BaseData.MODULES[m.id].name], Color("#9ad8ff"))
+
+
+## Налёт армии на одну из баз. Если капитан на этой планете, бой идёт на месте.
+func _raid(key: String, w: Dictionary) -> void:
+	if bases.is_empty():
+		return
+	var bkey: String = bases.keys()[randi() % bases.size()]
+	var b: Dictionary = bases[bkey]
+	var days := (hours - float(w.since)) / 24.0
+	var strength := 3 + int(days / 3.0)
+	if on_planet and str(current_planet.get("seed", "")) == bkey:
+		say("Армия «%s» высаживается у вашей базы! Солдат: %d." % [w.name, strength], Color("#ff6a4a"))
+		raid_started.emit(bkey, w.name, strength)
+		return
+	resolve_raid(b, w.name, strength)
+
+
+## Налёт без капитана: турели отбиваются, остальное достаётся модулям.
+func resolve_raid(b: Dictionary, faction: String, strength: int) -> void:
+	var ratio: float = BaseData.energy(b).ratio
+	var defense := int(BaseData.count_working(b, "turret") * 2 * ratio)
+	var hits := strength - defense
+	var name := base_name(b)
+	if hits <= 0:
+		say("%s отбила налёт армии «%s»: турели справились." % [_cap(name), faction], Color("#9aff6a"))
+		return
+	var lost := PackedStringArray()
+	for i in hits:
+		if b.modules.is_empty():
+			break
+		var m: Dictionary = b.modules[randi() % b.modules.size()]
+		m.worn = float(m.worn) + float(m.life) * 0.35
+		if float(m.worn) >= float(m.life):
+			if m.broken:
+				b.modules.erase(m)
+				lost.append(BaseData.MODULES[m.id].name)
+			else:
+				m.broken = true
+	if b.modules.is_empty():
+		bases.erase(str(b.planet.seed))
+		say("Армия «%s» уничтожила вашу базу на %s!" % [faction, b.planet.name], Color("#ff4a3a"))
+		return
+	say("Налёт армии «%s» на %s: модули повреждены%s." % [faction, name, (", уничтожены: " + ", ".join(lost)) if not lost.is_empty() else ""], Color("#ff6a4a"))

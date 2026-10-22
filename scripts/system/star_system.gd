@@ -36,6 +36,8 @@ var _glow_tex: GradientTexture2D
 
 
 func _ready() -> void:
+	GameState.on_planet = false
+	GameState.news.connect(_on_news)
 	rng.seed = GameState.galaxy_seed
 	_generate()
 	_build_environment()
@@ -215,7 +217,7 @@ func _build_planets() -> void:
 		body.add_child(clouds)
 		body.add_child(_glow(b.atmo, p.size * 2.4, 0.45))
 
-		var label := _label3d(p.name + ("\nколония" if not Biomes.profile(p).colony.is_empty() else ""), Color(0.9, 0.93, 1.0))
+		var label := _label3d(p.name + ("\nколония" if not Biomes.profile(p).colony.is_empty() else "") + ("\nваша база" if GameState.bases.has(str(p.seed)) else ""), Color(0.9, 0.93, 1.0))
 		add_child(label)
 		_add_orbit(p.orbit)
 		p["node"] = body
@@ -820,6 +822,12 @@ func _pilot_xp(amount: int) -> void:
 	for c in GameState.crew:
 		if c.role == "второй пилот":
 			GameState.add_xp(c, "piloting", amount)
+
+
+## Новости галактики (базы, доставки, войны) показываем в строке статуса.
+func _on_news(text: String, _col: Color) -> void:
+	if _status_label != null:
+		_status_label.text = text
 
 
 func _land() -> void:

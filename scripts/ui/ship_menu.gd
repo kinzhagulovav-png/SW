@@ -25,6 +25,8 @@ var _tab_index := 0
 var _rebuilding := false
 ## Кому покупаем снаряжение: 0 — капитан, дальше члены экипажа.
 var _gear_for := 0
+var _base_for := 0
+const DELIVERY_FEE_UI := BaseData.DELIVERY_FEE
 
 
 func _ready() -> void:
@@ -95,6 +97,19 @@ func refresh() -> void:
 		_page("Переработка", func(box): _fill_recipes(box, Items.MATERIALS, "Переработать", 0))
 		_page("Сборка", func(box): _fill_recipes(box, Items.BASICS, "Собрать", 0))
 		_page("Лаборатория", _fill_lab)
+		_page("Базы и новости", _fill_bases)
+	elif mode == "base":
+		var b := GameState.base_here()
+		_title.text = "%s · ПОТОМ: %d" % [GameState._cap(GameState.base_name(b)), GameState.money]
+		_page("Обзор", _fill_base)
+		_page("Мастерская", _fill_workshop)
+		_page("Склад", _fill_store)
+	elif mode == "found":
+		_title.text = "Основать базу на планете %s" % GameState.current_planet.get("name", "")
+		_page("Новая база", _fill_found)
+	elif (mode == "market" or mode == "station") and GameState.at_war(place.get("key", "")):
+		_title.text = "%s · ВОЙНА" % ("Рынок колонии " + place.name if mode == "market" else "Научная станция")
+		_page("Переговоры", _fill_war)
 	elif mode == "lab":
 		var sci := GameState.best_scientist()
 		_title.text = "Научный отсек · %s" % ("учёный %s" % sci.name if not sci.is_empty() else "учёного нет")
@@ -112,6 +127,7 @@ func refresh() -> void:
 		_page("Оборудование", _fill_equipment)
 		_page("Снаряжение", _fill_gear_shop)
 		_page("Ресурсы", _fill_resources)
+		_page("Для базы", _fill_base_shop)
 		_page("Корабль", _fill_ship)
 		_page("Трюм", _fill_hold)
 	else:
@@ -119,6 +135,7 @@ func refresh() -> void:
 		_page("Приборы и вещи", func(box): _fill_recipes(box, Items.DEVICES, "Изготовить", 1))
 		_page("Оборудование", _fill_equipment)
 		_page("Снаряжение", _fill_gear_shop)
+		_page("Для базы", _fill_base_shop)
 		_page("Верфь", _fill_shipyard)
 		_page("Экипаж", _fill_crew)
 		_page("Ресурсы", _fill_resources)
@@ -321,6 +338,7 @@ func _fill_ship(box: VBoxContainer) -> void:
 	_label(box, "Вместимость корпуса: %d ед. (оборудование %d, груз %d, свободно %d)" % [h.capacity, GameState.equip_volume(),
 		GameState.cargo_volume(), GameState.cargo_capacity() - GameState.cargo_volume()])
 	_label(box, "Грузоподъёмность: %d кг (масса груза %d и оборудования %d)" % [GameState.max_lift(), GameState.cargo_mass(), GameState.equip_mass()])
+	_label(box, "Прочность корпуса: %d из %d" % [GameState.ship.hull_hp, GameState.max_hull_hp()], Color("#ff8a6a") if float(GameState.ship.hull_hp) < GameState.max_hull_hp() * 0.5 else Color(0.9, 0.92, 1.0))
 	_label(box, "Скорость: %d   ·   Топливо: %d из %d   ·   Экипаж: %d из %d мест%s" % [GameState.ship_speed(), GameState.ship.fuel,
 		GameState.max_fuel(), GameState.crew.size() + 1, h.crew, "   ·   нужен второй пилот" if h.copilot else ""])
 	_label(box, "Оборудование", Color("#6fdcff"), 22)
@@ -353,6 +371,15 @@ func _fill_equipment(box: VBoxContainer) -> void:
 		GameState.money -= cost
 		GameState.ship.fuel = GameState.max_fuel()
 		_status.text = "Баки полны."
+		refresh())
+	var dmg := int(GameState.max_hull_hp() - float(GameState.ship.hull_hp))
+	var hcost := int(dmg * ShipData.HULL_REPAIR_PRICE * mult)
+	var hrow := _row(box)
+	_label(hrow, "Корпус: %d из %d. Ремонт: %d ПОТОМ" % [GameState.ship.hull_hp, GameState.max_hull_hp(), hcost], Color("#ffbf55"))
+	_button(hrow, "Починить корпус", dmg > 0 and GameState.money >= hcost, func():
+		GameState.money -= hcost
+		GameState.ship.hull_hp = GameState.max_hull_hp()
+		_status.text = "Корпус как новый."
 		refresh())
 	_label(box, "Ваше оборудование (место его покупает за %d%% цены)" % 55, Color("#6fdcff"), 22)
 	for slot in ShipData.EQUIP:
@@ -430,6 +457,7 @@ func _fill_shipyard(box: VBoxContainer) -> void:
 		_button(row, ("Доплатить %d" % cost) if cost >= 0 else ("Получить %d" % -cost), ok_space and ok_crew and GameState.money >= cost, func():
 			GameState.money -= cost
 			GameState.ship.hull = id
+			GameState.ship.hull_hp = GameState.max_hull_hp()
 			_status.text = "Новый корабль: «%s»!" % h.name
 			refresh())
 
@@ -617,3 +645,244 @@ func _fill_gear_shop(box: VBoxContainer) -> void:
 			GameState.shop_sold[key] = sold
 			_status.text = "%s: новое снаряжение %s" % [who.name, People.title(e)]
 			refresh())
+
+
+# ---------- База на планете ----------
+
+func _fill_found(box: VBoxContainer) -> void:
+	var p: Dictionary = GameState.current_planet
+	var prof := Biomes.profile(p)
+	_label(box, "База — ваш дом на этой планете: буры сами добывают минералы, завод перерабатывает, мастерская делает запчасти. Всё работает, даже когда вы улетели: время в галактике идёт.", Color(0.8, 0.85, 0.95), 18)
+	_label(box, "Командный модуль корабль привёз с собой. Остальные модули и оборудование заказывают с доставкой на научной станции и в развитых колониях (вкладка «Для базы»).", Color(0.7, 0.75, 0.85), 17)
+	_label(box, "Планета: %s · фон %s · минералы: %s · солнце ×%.1f" % [p.get("name", ""), Biomes.rad_text(prof.rad),
+		", ".join(PackedStringArray(prof.minerals.map(func(m): return Items.MINERALS[m].sym))) if not prof.minerals.is_empty() else "нет", BaseData.sun(p.get("biome", ""))], Color("#ffbf55"), 18)
+	var row := _row(box)
+	_label(row, "Командный модуль: %d ПОТОМ" % BaseData.FOUND_PRICE, Color(0.9, 0.92, 1.0), 20)
+	_button(row, "Основать базу", GameState.money >= BaseData.FOUND_PRICE, func():
+		GameState.money -= BaseData.FOUND_PRICE
+		base_founded.emit()
+		mode = "base"
+		_tab_index = 0
+		refresh())
+
+
+signal base_founded
+
+
+func _fill_base(box: VBoxContainer) -> void:
+	var b := GameState.base_here()
+	if b.is_empty():
+		_label(box, "Базы здесь нет.", Color(0.7, 0.75, 0.85))
+		return
+	var en := BaseData.energy(b)
+	_label(box, "Энергия: выработка %d кВт, потребление %d кВт%s" % [en.made, en.used,
+		"" if float(en.ratio) >= 1.0 else "  ·  НЕХВАТКА: всё работает на %d%%" % int(float(en.ratio) * 100.0)],
+		Color("#9aff6a") if float(en.ratio) >= 1.0 else Color("#ff8a6a"), 20)
+	_label(box, "Склад: %d из %d ед.   ·   Модулей: %d" % [BaseData.store_used(b), BaseData.store_cap(b), b.modules.size()], Color(0.85, 0.9, 1.0), 18)
+	if not b.visit.is_empty():
+		_label(box, "На базе мастера из «%s»%s." % [b.visit.faction, " — ВРАЖДЕБНЫ" if b.visit.hostile else ", чинят «%s»" % BaseData.MODULES[b.visit.id].name], Color("#ffbf55"), 18)
+	if not b.job.is_empty():
+		_label(box, "%s чинит модуль, готово через ~%d ч." % [b.job.who, ceili(float(b.job.done_at) - GameState.hours)], Color("#ffbf55"), 18)
+	var mech := GameState.best_mechanic()
+	_label(box, "Ремонт: механик (%s) — нужна Техника и запчасти; мастера — заказ на станции или в колонии, прилетают со своими запчастями и чинят как новое." %
+		("%s, Техника %d" % [mech.name, People.level(mech, "tech")] if not mech.is_empty() else "в экипаже нет"), Color(0.65, 0.72, 0.85), 16)
+	for m in b.modules:
+		var d: Dictionary = BaseData.MODULES[m.id]
+		var row := _row(box)
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(info)
+		var e := int(d.energy)
+		_label(info, "%s · %s · %s кВт" % [d.name, BaseData.status_text(m), ("+%d" % e) if e > 0 else str(e)],
+			Color("#ff6a4a") if m.broken else Color(0.9, 0.92, 1.0), 19)
+		_label(info, "Отработано %d ч из %d.  %s" % [m.worn, m.life, d.desc], Color(0.6, 0.68, 0.8), 15)
+		var bar := _bar(info, BaseData.cond(m), 100.0, Color("#76e8a0") if BaseData.cond(m) > 30.0 else Color("#ff8a6a"), 300)
+		bar.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		if BaseData.cond(m) < 99.0 or m.broken:
+			var pid := BaseData.part_id(m.id)
+			var have := int(b.store.get(pid, 0)) + GameState.count(pid)
+			var need_tech := BaseData.mech_need(m.id)
+			var ok: bool = not mech.is_empty() and People.level(mech, "tech") >= need_tech and have > 0 and b.job.is_empty()
+			var why := ""
+			if mech.is_empty():
+				why = "нет механика"
+			elif People.level(mech, "tech") < need_tech:
+				why = "нужна Техника %d" % need_tech
+			elif have <= 0:
+				why = "нет запчастей"
+			_button(row, "Механик: до %d%%" % int(GameState.mechanic_quality(mech)) if why == "" else "Механик: %s" % why, ok, func():
+				if int(b.store.get(pid, 0)) > 0:
+					BaseData.store_add(b, pid, -1)
+				else:
+					GameState.add_item(pid, -1)
+				b.job = {"uid": m.uid, "done_at": GameState.hours + 3.0 * float(d.tier), "quality": GameState.mechanic_quality(mech), "who": mech.name}
+				GameState.add_xp(mech, "tech", 2)
+				_status.text = "%s взялся за ремонт." % mech.name
+				refresh())
+
+
+func _fill_workshop(box: VBoxContainer) -> void:
+	var b := GameState.base_here()
+	var ok_room := BaseData.has_working(b, "workshop") and BaseData.has_working(b, "habitat")
+	_label(box, "Мастерская делает запчасти из материалов со склада базы, по %d ч на штуку." % int(BaseData.PART_HOURS) if ok_room else
+		"Нужны работающие мастерская и жилой модуль. Закажите их на станции или в развитой колонии.", Color(0.8, 0.85, 0.95) if ok_room else Color("#ff8a6a"), 18)
+	if not b.queue.is_empty():
+		_label(box, "В очереди: %s" % ", ".join(PackedStringArray(b.queue.map(func(q): return BaseData.MODULES[q.substr(5)].name))), Color("#ffbf55"), 17)
+	for id in BaseData.PARTS:
+		var need: Dictionary = BaseData.PARTS[id]
+		var pid := BaseData.part_id(id)
+		var row := _row(box)
+		_label(row, "%s (на складе %d)  ·  %s" % [BaseData.part_name(pid), int(b.store.get(pid, 0)), Items.need_text(need)], Color(0.9, 0.92, 1.0), 18)
+		_button(row, "Сделать", ok_room and Items.can_make(b.store, need), func():
+			for k in need:
+				BaseData.store_add(b, k, -int(need[k]))
+			b.queue.append(pid)
+			GameState.hero_xp("tech", 1)
+			refresh())
+
+
+func _fill_store(box: VBoxContainer) -> void:
+	var b := GameState.base_here()
+	_label(box, "Склад базы %d из %d ед. Перенос между складом и трюмом корабля." % [BaseData.store_used(b), BaseData.store_cap(b)], Color(0.8, 0.85, 0.95), 18)
+	_label(box, "На складе базы", Color("#6fdcff"), 21)
+	if b.store.is_empty():
+		_label(box, "    пусто", Color(0.6, 0.65, 0.75))
+	for id in b.store.keys():
+		var n := int(b.store[id])
+		var row := _row(box)
+		_label(row, "    %s: %d" % [Items.name_of(id), n], Color(0.9, 0.92, 1.0), 18)
+		_button(row, "В трюм все", true, func():
+			BaseData.store_add(b, id, -n)
+			GameState.add_item(id, n)
+			refresh())
+	_label(box, "В трюме корабля", Color("#6fdcff"), 21)
+	for id in GameState.inventory.keys():
+		var n := GameState.count(id)
+		var room := BaseData.store_cap(b) - BaseData.store_used(b)
+		var row := _row(box)
+		_label(row, "    %s: %d" % [Items.name_of(id), n], Color(0.9, 0.92, 1.0), 18)
+		_button(row, "На склад", room > 0, func():
+			var k := mini(n, BaseData.store_cap(b) - BaseData.store_used(b))
+			GameState.add_item(id, -k)
+			BaseData.store_add(b, id, k)
+			refresh())
+
+
+## Удалённый обзор баз (связь через командный модуль) и последние новости.
+func _fill_bases(box: VBoxContainer) -> void:
+	if GameState.bases.is_empty():
+		_label(box, "Баз пока нет. Основать базу: на планете клавиша N.", Color(0.7, 0.75, 0.85))
+	for key in GameState.bases:
+		var b: Dictionary = GameState.bases[key]
+		var en := BaseData.energy(b)
+		var broken: int = b.modules.filter(func(m): return m.broken).size()
+		_label(box, "%s: модулей %d, сломано %d, энергия %d/%d кВт, склад %d/%d" % [GameState._cap(GameState.base_name(b)), b.modules.size(), broken,
+			en.made, en.used, BaseData.store_used(b), BaseData.store_cap(b)], Color("#ff8a6a") if broken > 0 else Color(0.9, 0.92, 1.0), 18)
+	for key in GameState.wars:
+		_label(box, "Война: %s" % GameState.wars[key].name, Color("#ff6a4a"), 18)
+	if not GameState.orders.is_empty():
+		_label(box, "В пути", Color("#6fdcff"), 21)
+		for o in GameState.orders:
+			_label(box, "    %s → %s, через ~%d ч" % [BaseData.MODULES[o.id].name if o.type == "module" else "мастера из «%s»" % o.faction,
+				GameState.bases[o.base].planet.name if GameState.bases.has(o.base) else "?", ceili(float(o.eta) - GameState.hours)], Color(0.8, 0.85, 0.95), 17)
+	_label(box, "Новости", Color("#6fdcff"), 21)
+	var log := GameState.news_log.duplicate()
+	log.reverse()
+	for line in log:
+		_label(box, line, Color(0.75, 0.8, 0.9), 16)
+
+
+## Станция и развитые колонии: модули с доставкой, запчасти, вызов мастеров.
+func _fill_base_shop(box: VBoxContainer) -> void:
+	var tech: int = place.get("tech", 3)
+	var mult: float = place.get("prices", 1.0) * GameState.buy_mult(_colony())
+	var faction: String = place.get("name", "станция")
+	if GameState.bases.is_empty():
+		_label(box, "У вас нет баз. Основать базу: на планете клавиша N.", Color("#ff8a6a"), 18)
+	var keys := GameState.bases.keys()
+	_base_for = clampi(_base_for, 0, max(0, keys.size() - 1))
+	if keys.size() > 1:
+		var sel := _row(box)
+		for i in keys.size():
+			var idx := i
+			var b := Button.new()
+			b.text = "  %s  " % GameState.bases[keys[i]].planet.name
+			b.toggle_mode = true
+			b.button_pressed = i == _base_for
+			b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			b.pressed.connect(func():
+				_base_for = idx
+				refresh())
+			sel.add_child(b)
+	var bkey: String = keys[_base_for] if not keys.is_empty() else ""
+	if tech < 3:
+		_label(box, "Эта колония не производит модули и оборудование (нужна развитая колония, уровень техники 3+).", Color(0.7, 0.75, 0.85), 17)
+	else:
+		_label(box, "Модули с доставкой%s (доставка %d ПОТОМ + 10%%)" % [" на базу " + GameState.bases[bkey].planet.name if bkey != "" else "", DELIVERY_FEE_UI], Color("#6fdcff"), 21)
+		for id in BaseData.MODULES:
+			if not BaseData.sold_here(id, tech):
+				continue
+			var d: Dictionary = BaseData.MODULES[id]
+			var cost := int(float(d.price) * 1.1 * mult) + BaseData.DELIVERY_FEE
+			var row := _row(box)
+			var info := VBoxContainer.new()
+			info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(info)
+			var e := int(d.energy)
+			_label(info, "%s · %s кВт · срок службы %d ч" % [d.name, ("+%d" % e) if e > 0 else str(e), d.life], Color(0.9, 0.92, 1.0), 19)
+			_label(info, d.desc, Color(0.6, 0.68, 0.8), 15)
+			_button(row, "Заказать за %d" % cost, bkey != "" and GameState.money >= cost, func():
+				GameState.money -= cost
+				var eta := GameState.hours + randf_range(10.0, 30.0)
+				GameState.orders.append({"type": "module", "base": bkey, "id": id, "from": place.get("key", ""), "faction": faction, "eta": eta})
+				GameState.trade_xp(_colony())
+				_status.text = "%s в пути, прибудет через ~%d ч." % [d.name, ceili(eta - GameState.hours)]
+				refresh())
+	_label(box, "Запчасти (в трюм корабля)", Color("#6fdcff"), 21)
+	for id in BaseData.PARTS:
+		var pid := BaseData.part_id(id)
+		var price := int(BaseData.part_price(pid) * mult)
+		var row := _row(box)
+		_label(row, "%s · %d ПОТОМ  (в трюме: %d)" % [BaseData.part_name(pid), price, GameState.count(pid)], Color(0.9, 0.92, 1.0), 18)
+		_button(row, "Купить", GameState.money >= price, func():
+			GameState.money -= price
+			GameState.add_item(pid, 1)
+			GameState.trade_xp(_colony())
+			refresh())
+	if bkey == "":
+		return
+	var base: Dictionary = GameState.bases[bkey]
+	_label(box, "Мастера: прилетают со своими запчастями и чинят как новое", Color("#6fdcff"), 21)
+	var any := false
+	for m in base.modules:
+		if BaseData.cond(m) >= 90.0 and not m.broken:
+			continue
+		if tech < 3 or (tech < 4 and int(BaseData.MODULES[m.id].tier) > tech - 1):
+			continue
+		any = true
+		var cost := int(BaseData.masters_price(m.id) * mult)
+		var busy: bool = not base.visit.is_empty() or GameState.orders.any(func(o): return o.type == "masters" and o.base == bkey)
+		var row := _row(box)
+		_label(row, "%s · %s" % [BaseData.MODULES[m.id].name, BaseData.status_text(m)], Color("#ff6a4a") if m.broken else Color(0.9, 0.92, 1.0), 18)
+		_button(row, "Вызвать за %d" % cost, not busy and GameState.money >= cost, func():
+			GameState.money -= cost
+			var eta := GameState.hours + randf_range(8.0, 20.0)
+			GameState.orders.append({"type": "masters", "base": bkey, "uid": m.uid, "from": place.get("key", ""), "faction": faction, "eta": eta})
+			_status.text = "Мастера вылетели, будут через ~%d ч." % ceili(eta - GameState.hours)
+			refresh())
+	if not any:
+		_label(box, "    Ремонт мастерами не нужен или им не по силам.", Color(0.6, 0.65, 0.75), 16)
+
+
+func _fill_war(box: VBoxContainer) -> void:
+	var key: String = place.key
+	var w: Dictionary = GameState.wars[key]
+	_label(box, "Вы напали на их мастеров. «%s» воюет с вами: торговли нет, армия нападает на ваши базы и корабль." % w.name, Color("#ff6a4a"), 20)
+	var price := GameState.peace_price(key)
+	var row := _row(box)
+	_label(row, "Мирный договор: %d ПОТОМ (Дипломатия снижает цену)" % price, Color("#ffbf55"), 20)
+	_button(row, "Заключить мир", GameState.money >= price, func():
+		GameState.money -= price
+		GameState.make_peace(key)
+		_tab_index = 0
+		refresh())

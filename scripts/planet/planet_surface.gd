@@ -66,6 +66,7 @@ var _env_label: Label
 var _env: Environment
 var _menu: ShipMenu
 var squad: CrewSquad      # члены экипажа на высадке
+var base_view: BaseView   # база на этой планете, мастера и солдаты
 var _scientist: Node3D
 var _lab_glow: Array[MeshInstance3D] = []
 var _lab_time := 0.0
@@ -118,6 +119,12 @@ func _ready() -> void:
 	squad = CrewSquad.new()
 	add_child(squad)
 	squad.setup(self)
+	base_view = BaseView.new()
+	add_child(base_view)
+	base_view.setup(self)
+	GameState.on_planet = true
+	GameState.news.connect(_on_news)
+	_menu.base_founded.connect(base_view.found)
 	jet_max = JET_MAX * People.jet_mult(GameState.gear("jetpack"))
 	jet = jet_max
 	GameState.stats.landings += 1
@@ -404,6 +411,10 @@ func _spot(radius: float, min_ny: float, mask: Callable = Callable(), tries: int
 		if mask.is_valid() and not mask.call(x, z):
 			continue
 		if Vector2(x, z).distance_to(SPAWN) < 16.0:
+			continue
+		# На площадке базы ничего не растёт.
+		var bs: Dictionary = GameState.bases.get(str(planet.seed), {})
+		if not bs.is_empty() and Vector2(x, z).distance_to(Vector2(bs.center[0], bs.center[1])) < 40.0:
 			continue
 		return Vector3(x, y, z)
 	return null
@@ -922,6 +933,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_C:
 				_menu.open("people")
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			KEY_N:
+				_open_base()
 			KEY_TAB, KEY_G, KEY_T, KEY_V, KEY_B, KEY_X:
 				if not inside:
 					squad.command(event.keycode)
@@ -1059,6 +1072,8 @@ func _process(delta: float) -> void:
 			hint = "%s · здоровье %d из %d" % [Fauna.describe(look.sp), ceili(look.hp), int(look.max_hp)]
 	if inside:
 		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "lab": "E: научная работа (переработка, сборка, изучение образцов)", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
+	elif base_view.near_core():
+		hint = "E: управление базой"
 	elif squad.revive_hint() != "":
 		hint = squad.revive_hint()
 	elif to_ship < TAKEOFF_DIST:
@@ -1150,13 +1165,21 @@ func _shoot() -> void:
 		if d < best_d and to.normalized().dot(dir) > 0.982 - 0.0015 * GameState.lvl("accuracy"):
 			best_d = d
 			best = b
+	var dmg := People.weapon_damage(GameState.gear("weapon")) * (1.0 + 0.08 * GameState.lvl("accuracy"))
+	var npc := base_view.pick(cam.global_position, dir, best_d, 0.982 - 0.0015 * GameState.lvl("accuracy"))
+	if not npc.is_empty():
+		best = null
+		best_d = npc.d
 	var from := tool_tip.global_position
 	var end := cam.global_position + dir * best_d
 	_beam(from, end, Color(0.6, 2.8, 4.5))
 	recoil = 0.035
+	if not npc.is_empty():
+		GameState.hero_xp("accuracy", 1)
+		base_view.damage(npc.t, dmg)
 	if best != null:
 		GameState.hero_xp("accuracy", 1)
-		if damage_beast(best, People.weapon_damage(GameState.gear("weapon")) * (1.0 + 0.08 * GameState.lvl("accuracy"))):
+		if damage_beast(best, dmg):
 			GameState.hero_xp("accuracy", 3)
 			if rng.randf() < 0.5:
 				_add_sample(0.0)
@@ -1387,6 +1410,46 @@ func _dig(p: Vector3, strength: float, depth_limit: float = -1.0) -> bool:
 	return true
 
 
+## Ровная площадка под базу: внутри r_in всё на одной высоте, к r_out плавно переходит в рельеф.
+func flatten(c: Vector2, r_in: float, r_out: float) -> void:
+	var n := SIZE + 1
+	var h := ground(c.x, c.y)
+	if not water.is_empty() and not water.get("ice", false):
+		h = max(h, level + 0.8)
+	var ix0 := clampi(floori(c.x + SIZE / 2.0 - r_out), 0, SIZE)
+	var ix1 := clampi(ceili(c.x + SIZE / 2.0 + r_out), 0, SIZE)
+	var iz0 := clampi(floori(c.y + SIZE / 2.0 - r_out), 0, SIZE)
+	var iz1 := clampi(ceili(c.y + SIZE / 2.0 + r_out), 0, SIZE)
+	for iz in range(iz0, iz1 + 1):
+		for ix in range(ix0, ix1 + 1):
+			var d := Vector2(ix - SIZE / 2.0, iz - SIZE / 2.0).distance_to(c)
+			if d > r_out:
+				continue
+			var t := smoothstep(r_in, r_out, d)
+			var i := iz * n + ix
+			heights[i] = lerp(h, heights[i], t)
+			orig_heights[i] = lerp(h, orig_heights[i], t)
+	var per_side := SIZE / CHUNK
+	for chz in range(clampi((iz0 - 2) / CHUNK, 0, per_side - 1), clampi((iz1 + 2) / CHUNK, 0, per_side - 1) + 1):
+		for chx in range(clampi((ix0 - 2) / CHUNK, 0, per_side - 1), clampi((ix1 + 2) / CHUNK, 0, per_side - 1) + 1):
+			_chunks[chz * per_side + chx].mesh = _chunk_mesh(chx, chz)
+	_hmap.map_data = heights
+	# Траву, камни и предметы на площадке убираем или опускаем на землю.
+	for key in _grass_cells:
+		for gi in _grass_cells[key]:
+			var tr := _grass.get_instance_transform(gi)
+			var gd := Vector2(tr.origin.x, tr.origin.z).distance_to(c)
+			if gd < r_in:
+				_grass.set_instance_transform(gi, Transform3D(Basis().scaled(Vector3.ZERO), tr.origin))
+			elif gd < r_out:
+				tr.origin.y = ground(tr.origin.x, tr.origin.z)
+				_grass.set_instance_transform(gi, tr)
+	for it in items:
+		var np: Vector3 = it.node.position
+		if Vector2(np.x, np.z).distance_to(c) < r_out:
+			it.node.position.y = ground(np.x, np.z)
+
+
 func _interact() -> void:
 	if inside:
 		match _ship_zone():
@@ -1404,6 +1467,8 @@ func _interact() -> void:
 				_open_lab()
 	elif squad.try_revive():
 		pass
+	elif base_view.near_core():
+		_open_base()
 	elif ship.global_position.distance_to(player.global_position) < TAKEOFF_DIST:
 		_enter_ship()
 
@@ -1413,6 +1478,8 @@ func _leave() -> void:
 	GameState.ship.fuel = max(0.0, float(GameState.ship.fuel) - GameState.land_fuel())
 	GameState.hero_xp("piloting", 1)
 	GameState.health = hp
+	GameState.on_planet = false
+	base_view.on_leave()
 	squad.board_all()
 	for id in trip.minerals:
 		GameState.add_item(id, int(trip.minerals[id]))
@@ -1424,9 +1491,21 @@ func _leave() -> void:
 	get_tree().change_scene_to_file("res://scenes/system/star_system.tscn")
 
 
+func _on_news(text: String, col: Color) -> void:
+	if not leaving:
+		_notify(text, col)
+
+
+## Окно базы, а если её нет — предложение основать.
+func _open_base() -> void:
+	_menu.open("base" if not GameState.base_here().is_empty() else "found")
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
 ## Капитан погиб: конец игры, титры во славу исследователя.
 func _die() -> void:
 	leaving = true
+	GameState.on_planet = false
 	GameState.health = 100.0
 	GameState.death = {"planet": planet.name, "biome": B.name}
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE

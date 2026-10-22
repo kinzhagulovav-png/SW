@@ -10,7 +10,8 @@ extends Node3D
 ## Если взлететь без него, он остаётся на планете навсегда.
 
 const ORDERS := {"follow": "за мной", "wait": "ждёт", "dig": "копает", "attack": "атакует", "ship": "у корабля"}
-const ROLE_COLORS := {"учёный": Color("#f0f2f4"), "второй пилот": Color("#3a6fd0"), "боец": Color("#b84a3a"), "механик": Color("#e0a030")}
+const ROLE_COLORS := {"учёный": Color("#f0f2f4"), "второй пилот": Color("#3a6fd0"), "боец": Color("#b84a3a"), "механик": Color("#e0a030"),
+	"мастер": Color("#e07a20"), "солдат": Color("#5a1a1a")}
 const SPEED := 6.5
 const SHOOT_RANGE := 22.0
 
@@ -239,7 +240,7 @@ func _update(m: Dictionary, delta: float) -> void:
 			dest = m.spot
 			near = 2.2
 		"attack":
-			if m.target.is_empty() or not surface.beasts.has(m.target):
+			if m.target.is_empty() or not (surface.beasts.has(m.target) or surface.base_view.npcs.has(m.target)):
 				m.order = "follow"
 				m.target = {}
 				return
@@ -314,14 +315,16 @@ func _shoot(m: Dictionary, b: Dictionary) -> void:
 	m.cd = People.weapon_cooldown(w) * 1.6
 	var acc := People.level(m.p, "accuracy")
 	var from: Vector3 = m.node.position + Vector3(0, 1.2, 0)
-	var to: Vector3 = b.node.position + Vector3(0, float(b.sp.size), 0)
+	var to: Vector3 = b.node.position + Vector3(0, float(b.sp.size) if b.has("sp") else 1.1, 0)
 	var hit: bool = surface.rng.randf() < 0.55 + 0.04 * acc
 	if not hit:
 		to += Vector3(surface.rng.randf_range(-2, 2), surface.rng.randf_range(0, 1.5), surface.rng.randf_range(-2, 2))
 	_beam(from, to, Color(2.8, 0.9, 0.6))
 	if hit:
 		GameState.add_xp(m.p, "accuracy", 1)
-		if surface.damage_beast(b, People.weapon_damage(w) * (1.0 + 0.08 * acc)):
+		if not b.has("sp"):
+			surface.base_view.damage(b, People.weapon_damage(w) * (1.0 + 0.08 * acc))
+		elif surface.damage_beast(b, People.weapon_damage(w) * (1.0 + 0.08 * acc)):
 			GameState.add_xp(m.p, "accuracy", 3)
 			surface._notify("%s: зверь повержен!" % m.p.name, Color("#9ad8ff"))
 
@@ -414,6 +417,10 @@ func _nearest_beast(at: Vector3, radius: float) -> Dictionary:
 
 
 func _angry_near(at: Vector3) -> Dictionary:
+	# Сначала враги базы: солдаты и разозлённые мастера.
+	var foe: Dictionary = surface.base_view.hostile_near(at, SHOOT_RANGE)
+	if not foe.is_empty():
+		return foe
 	var best := {}
 	var bd := SHOOT_RANGE
 	for b in surface.beasts:

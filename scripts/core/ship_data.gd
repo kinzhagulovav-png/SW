@@ -35,7 +35,10 @@ const LAND_FUEL := 8.0
 const FUEL_PRICE := 3
 
 ## Объём, который занимает в трюме единица предмета.
-const CARGO_VOLUME := {"mineral": 1, "material": 1, "basic": 2, "device": 4, "sample": 2}
+const CARGO_VOLUME := {"mineral": 1, "material": 1, "basic": 2, "device": 4, "sample": 2, "part": 3}
+## Прочность корпуса по классу: её снимают атаки армий во время войны.
+const ARMOR := {"skif": 120, "mul": 200, "sokol": 180, "bastion": 320, "leviafan": 500}
+const HULL_REPAIR_PRICE := 4  # ПОТОМ за единицу прочности
 
 
 static func size_of(e: Dictionary) -> int:

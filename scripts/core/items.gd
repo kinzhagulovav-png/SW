@@ -87,6 +87,8 @@ static func name_of(id: String) -> String:
 	for table in [MINERALS, MATERIALS, BASICS, DEVICES]:
 		if table.has(id):
 			return table[id].name
+	if BaseData.is_part(id):
+		return BaseData.part_name(id)
 	return id
 
 
@@ -164,6 +166,8 @@ static func mass_of(id: String) -> float:
 			for k in table[id].need:
 				m += mass_of(k) * int(table[id].need[k])
 			return m
+	if BaseData.is_part(id):
+		return BaseData.PART_MASS
 	return DEVICE_MASS
 
 
@@ -173,6 +177,8 @@ static func price_of(id: String) -> int:
 		return int(MINERALS[id].price)
 	if DEVICES.has(id):
 		return int(DEVICES[id].price)
+	if BaseData.is_part(id):
+		return BaseData.part_price(id)
 	for pair in [[MATERIALS, 1.3], [BASICS, 1.5]]:
 		if pair[0].has(id):
 			var p := 0.0
