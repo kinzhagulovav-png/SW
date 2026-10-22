@@ -85,6 +85,14 @@ func _draw() -> void:
 			var bc := Color("#ff4a3a") if b.angry else (Color("#ffa040") if b.sp.temper == "neutral" else Color("#c8ff9a"))
 			draw_circle(c + r, 4.0, bc)
 
+	# Экипаж на высадке: голубые ромбы, без сознания — красные.
+	if surface.squad != null:
+		for m in surface.squad.members:
+			var r: Vector2 = _to_radar(m.node.global_position)
+			if r.length() < RADIUS:
+				var mc := Color("#ff5a5a") if m.down else Color("#7fe0ff")
+				draw_colored_polygon(PackedVector2Array([c + r + Vector2(0, -5), c + r + Vector2(4, 0), c + r + Vector2(0, 5), c + r + Vector2(-4, 0)]), mc)
+
 	# Игрок в центре: стрелка вверх.
 	draw_colored_polygon(PackedVector2Array([c + Vector2(0, -9), c + Vector2(6, 7), c + Vector2(-6, 7)]), Color("#6fdcff"))
 	# Корабль (рисуем поверх игрока, он важнее).

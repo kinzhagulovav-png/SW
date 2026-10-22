@@ -9,6 +9,10 @@ extends PanelContainer
 const SCIENTIST_PRICE := 300
 const COPILOT_PRICE := 400
 const PILOT_NAMES := ["Рейн Торн", "Кира Мэй", "Борис Ланг", "Селена Ю", "Гарт Ормонд"]
+const FIGHTER_NAMES := ["Крон Валд", "Ния Шторм", "Тимур Бек", "Рагна Холм", "Зейн Арко"]
+const MECH_NAMES := ["Отто Винтер", "Юна Пак", "Савва Грин", "Илса Мор", "Брок Тейлор"]
+const FIGHTER_PRICE := 350
+const MECH_PRICE := 350
 const NAMES := ["Ирма Вейс", "Тарос Кейн", "Лия Орлова", "Дорн Салех", "Мика Ито", "Ярослав Нейман", "Ава Корр"]
 
 var mode := "ship"
@@ -265,7 +269,7 @@ func _fill_crew(box: VBoxContainer) -> void:
 	var h := GameState.hull()
 	_label(box, "Корабль «%s» (%s): мест для экипажа %d, одно из них ваше.%s" % [h.name, h.kind, h.crew,
 		" Этому классу нужен второй пилот." if h.copilot else ""], Color(0.7, 0.75, 0.85), 18)
-	_label(box, "Учёный изучает неизвестные образцы в лаборатории корабля. Чем выше его навык, тем сложнее образцы ему по силам.", Color(0.7, 0.75, 0.85), 18)
+	_label(box, "Учёный изучает образцы в лаборатории. Боец приходит с бластером и прикрывает на высадке. Механик приходит с лапатроном: копает по команде и ускоряет ремонт (Техника). Экипаж высаживается вместе с вами и слушает команды.", Color(0.7, 0.75, 0.85), 18)
 	for c in GameState.crew:
 		var main: String = People.ROLE_SKILL.get(c.role, "science")
 		_label(box, "%s · %s · %s %d   (подробно: окно «Персонажи», клавиша C)" % [c.name, c.role, People.SKILLS[main].name, People.level(c, main)])
@@ -273,7 +277,8 @@ func _fill_crew(box: VBoxContainer) -> void:
 	var disc := 1.0 - 0.05 * GameState.lvl("leadership")
 	if full:
 		_label(box, "Мест на корабле больше нет. Нужен корпус побольше (верфь).", Color("#ff8a6a"))
-	for offer in [["учёного", "учёный", SCIENTIST_PRICE, NAMES], ["второго пилота", "второй пилот", COPILOT_PRICE, PILOT_NAMES]]:
+	for offer in [["учёного", "учёный", SCIENTIST_PRICE, NAMES], ["второго пилота", "второй пилот", COPILOT_PRICE, PILOT_NAMES],
+			["бойца", "боец", FIGHTER_PRICE, FIGHTER_NAMES], ["механика", "механик", MECH_PRICE, MECH_NAMES]]:
 		var row := _row(box)
 		var cost := int(float(offer[2]) * disc)
 		var main: String = People.ROLE_SKILL[offer[1]]
@@ -282,7 +287,6 @@ func _fill_crew(box: VBoxContainer) -> void:
 			GameState.money -= cost
 			var names: Array = offer[3]
 			var c := People.new_person(names[randi() % names.size()], offer[1], randi_range(2, 4))
-			c.gear = {"suit": {"id": "suit", "mk": 1, "cond": 80}, "armor": {"id": "armor", "mk": 1, "cond": 80}}
 			GameState.crew.append(c)
 			GameState.hero_xp("leadership", 3)
 			_status.text = "%s теперь в экипаже. %s: %d." % [c.name, People.SKILLS[main].name, People.level(c, main)]
@@ -509,7 +513,13 @@ func _fill_person(box: VBoxContainer, p: Dictionary) -> void:
 		else:
 			_label(box, "    %s — %s" % [People.title(g), People.effect_text(g)], Color(0.9, 0.92, 1.0), 18)
 	if not is_hero:
-		_label(box, "Снаряжение экипажа пригодится, когда члены экипажа будут высаживаться и штурмовать вместе с вами.", Color(0.6, 0.68, 0.8), 15)
+		var row := _row(box)
+		var lands: bool = p.get("lands", true)
+		_label(row, "На высадке: %s" % ("идёт с капитаном" if lands else "остаётся на корабле"), Color("#9aff6a") if lands else Color(0.7, 0.75, 0.85), 19)
+		_button(row, "Оставить на корабле" if lands else "Брать на высадку", true, func():
+			p["lands"] = not lands
+			refresh())
+		_label(box, "На планете: G за мной, T ждать, V копать (нужен лапатрон), B атаковать (нужен бластер), X к кораблю, Tab — кому команда.", Color(0.6, 0.68, 0.8), 15)
 
 
 func _people() -> Array[Dictionary]:

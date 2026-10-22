@@ -65,6 +65,7 @@ var _armor_bar: ProgressBar
 var _env_label: Label
 var _env: Environment
 var _menu: ShipMenu
+var squad: CrewSquad      # члены экипажа на высадке
 var _scientist: Node3D
 var _lab_glow: Array[MeshInstance3D] = []
 var _lab_time := 0.0
@@ -113,6 +114,9 @@ func _ready() -> void:
 	_build_interior()
 	_build_player()
 	_build_ui()
+	squad = CrewSquad.new()
+	add_child(squad)
+	squad.setup(self)
 	jet_max = JET_MAX * People.jet_mult(GameState.gear("jetpack"))
 	jet = jet_max
 	GameState.stats.landings += 1
@@ -912,6 +916,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_C:
 				_menu.open("people")
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			KEY_TAB, KEY_G, KEY_T, KEY_V, KEY_B, KEY_X:
+				if not inside:
+					squad.command(event.keycode)
 
 
 func _physics_process(delta: float) -> void:
@@ -1044,6 +1051,8 @@ func _process(delta: float) -> void:
 			hint = Fauna.describe(look.sp)
 	if inside:
 		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "lab": "E: научная работа (переработка, сборка, изучение образцов)", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
+	elif squad.revive_hint() != "":
+		hint = squad.revive_hint()
 	elif to_ship < TAKEOFF_DIST:
 		hint = "E: подняться на корабль"
 	_prompt.text = hint
@@ -1067,13 +1076,25 @@ func _beast_in_sight() -> Dictionary:
 func _update_beast(b: Dictionary, delta: float) -> void:
 	var n: Node3D = b.node
 	var sp: Dictionary = b.sp
-	var flat := Vector2(n.position.x - player.position.x, n.position.z - player.position.z)
+	# Цель зверя: ближайший из капитана и экипажа на высадке.
+	var prey := player.position
+	var flat := Vector2(n.position.x - prey.x, n.position.z - prey.z)
 	var d := flat.length() if not inside else 9999.0
+	var victim := squad.nearest(n.position)
+	if not victim.is_empty():
+		var vp: Vector3 = victim.node.position
+		var vflat := Vector2(n.position.x - vp.x, n.position.z - vp.z)
+		if vflat.length() < d:
+			prey = vp
+			flat = vflat
+			d = vflat.length()
+		else:
+			victim = {}
 	var tgt: Vector3 = b.target
 	var speed: float = sp.walk
 	b.scared = max(0.0, b.scared - delta)
 	if b.angry and d < 30.0 * float(B.danger):
-		tgt = player.position
+		tgt = prey
 		speed = sp.run
 	elif (sp.temper == "passive" and d < 12.0) or b.scared > 0.0:
 		# Убегает от капитана.
@@ -1103,7 +1124,10 @@ func _update_beast(b: Dictionary, delta: float) -> void:
 	var lift := Fauna.animate(b, _life_time, moving)
 	n.position.y = ground(n.position.x, n.position.z) + lift * float(sp.size)
 	if b.angry and d < 2.6 * float(sp.size) + 0.6:
-		_hurt(float(sp.dmg) * delta)
+		if victim.is_empty():
+			_hurt(float(sp.dmg) * delta)
+		else:
+			squad.hurt(victim, float(sp.dmg) * delta)
 
 
 func _shoot() -> void:
@@ -1123,20 +1147,27 @@ func _shoot() -> void:
 	_beam(from, end, Color(0.6, 2.8, 4.5))
 	recoil = 0.035
 	if best != null:
-		best.hp -= People.weapon_damage(GameState.gear("weapon")) * (1.0 + 0.08 * GameState.lvl("accuracy"))
 		GameState.hero_xp("accuracy", 1)
-		# Раненый зверь: мирный убегает, остальные звереют.
-		if best.sp.temper == "passive":
-			best.scared = 6.0
-		else:
-			best.angry = true
-		if best.hp <= 0:
-			best.node.queue_free()
-			beasts.erase(best)
-			GameState.stats.beasts += 1
+		if damage_beast(best, People.weapon_damage(GameState.gear("weapon")) * (1.0 + 0.08 * GameState.lvl("accuracy"))):
 			GameState.hero_xp("accuracy", 3)
 			if rng.randf() < 0.5:
 				_add_sample(0.0)
+
+
+## Урон зверю от капитана или экипажа. Возвращает true, если зверь повержен.
+func damage_beast(b: Dictionary, dmg: float) -> bool:
+	b.hp -= dmg
+	# Раненый зверь: мирный убегает, остальные звереют.
+	if b.sp.temper == "passive":
+		b.scared = 6.0
+	else:
+		b.angry = true
+	if b.hp <= 0:
+		b.node.queue_free()
+		beasts.erase(b)
+		GameState.stats.beasts += 1
+		return true
+	return false
 
 
 func _beam(from: Vector3, end: Vector3, col: Color) -> void:
@@ -1263,6 +1294,16 @@ func _add_sample(depth: float) -> bool:
 ## у каждой жилы свой главный минерал, а набор минералов у каждой планеты свой.
 ## Глубже попадаются редкие. Вне жил почти пусто.
 func _dig_loot(p: Vector3) -> void:
+	var loot := roll_loot(p, GameState.lvl("geology"))
+	if loot.has("mineral"):
+		_add_mineral(loot.mineral, int(loot.n))
+	if loot.has("sample"):
+		_add_sample(float(loot.sample))
+
+
+## Что нашлось при раскопке: {"mineral", "n"} и/или {"sample": глубина}. geology — навык копающего.
+func roll_loot(p: Vector3, geology: int) -> Dictionary:
+	var out := {}
 	var depth: float = max(0.0, orig_heights_at(p) - ground(p.x, p.z))
 	var allowed: Array = profile.minerals
 	var rich := _vein(p.x, p.z) > VEIN_LEVEL
@@ -1273,11 +1314,13 @@ func _dig_loot(p: Vector3) -> void:
 			if id != "":
 				var n := rng.randi_range(1, 3) if rich else 1
 				# Геология: опытный глаз находит больше.
-				if rng.randf() < 0.06 * GameState.lvl("geology"):
+				if rng.randf() < 0.06 * geology:
 					n += 1
-				_add_mineral(id, n)
+				out["mineral"] = id
+				out["n"] = n
 	if depth > 1.5 and rng.randf() < min(0.015 + depth * 0.005, 0.08):
-		_add_sample(depth)
+		out["sample"] = depth
+	return out
 
 
 ## Главный минерал жилы: зависит от участка 24×24 м.
@@ -1290,7 +1333,7 @@ func _vein_mineral(p: Vector3) -> String:
 
 
 ## Опускает землю вокруг точки. Возвращает false, если копать больше некуда.
-func _dig(p: Vector3, strength: float) -> bool:
+func _dig(p: Vector3, strength: float, depth_limit: float = -1.0) -> bool:
 	const R := 1.8
 	var n := SIZE + 1
 	var cx := p.x + SIZE / 2.0
@@ -1307,7 +1350,7 @@ func _dig(p: Vector3, strength: float) -> bool:
 				continue
 			var i := iz * n + ix
 			var k := 1.0 - d / R
-			var floor_h := orig_heights[i] - max_depth()
+			var floor_h := orig_heights[i] - (max_depth() if depth_limit < 0.0 else depth_limit)
 			var nh: float = max(floor_h, heights[i] - strength * k * k * 2.0)
 			if nh < heights[i] - 0.001:
 				heights[i] = nh
@@ -1343,10 +1386,15 @@ func _interact() -> void:
 			"cockpit":
 				if GameState.overloaded():
 					_notify("Перегруз: %d кг из %d. Корабль не взлетит, выбросьте часть груза в научном отсеке." % [GameState.takeoff_mass(), GameState.max_lift()], Color("#ff6a4a"))
+				elif squad.left_behind() != "" and not _warned.get("left", false):
+					_warned["left"] = true
+					_notify("%s без сознания и останется на планете навсегда! E ещё раз — всё равно взлететь." % squad.left_behind(), Color("#ff6a4a"))
 				else:
 					_leave()
 			"lab":
 				_open_lab()
+	elif squad.try_revive():
+		pass
 	elif ship.global_position.distance_to(player.global_position) < TAKEOFF_DIST:
 		_enter_ship()
 
@@ -1356,6 +1404,7 @@ func _leave() -> void:
 	GameState.ship.fuel = max(0.0, float(GameState.ship.fuel) - GameState.land_fuel())
 	GameState.hero_xp("piloting", 1)
 	GameState.health = hp
+	squad.board_all()
 	for id in trip.minerals:
 		GameState.add_item(id, int(trip.minerals[id]))
 		GameState.stats.minerals += int(trip.minerals[id])

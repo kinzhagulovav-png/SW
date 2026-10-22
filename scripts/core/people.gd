@@ -31,7 +31,14 @@ const SKILLS := {
 }
 
 ## Главный навык роли: с ним член экипажа нанимается и в нём растёт быстрее.
-const ROLE_SKILL := {"учёный": "science", "второй пилот": "piloting"}
+const ROLE_SKILL := {"учёный": "science", "второй пилот": "piloting", "боец": "accuracy", "механик": "tech"}
+## С чем нанимается каждая роль (Мк-1, немного поношенное).
+const ROLE_GEAR := {
+	"учёный": ["suit", "armor"],
+	"второй пилот": ["suit", "armor"],
+	"боец": ["suit", "armor", "weapon", "boots"],
+	"механик": ["suit", "armor", "lapatron", "backpack"],
+}
 
 ## Слоты снаряжения. base — цена Мк-1.
 const GEAR := {
@@ -50,7 +57,9 @@ const UPGRADE_NEED := {2: {"frame": 1}, 3: {"frame": 1, "chip": 1}, 4: {"frame":
 
 
 static func new_person(name: String, role: String, main_level: int = 0) -> Dictionary:
-	var p := {"name": name, "role": role, "skills": {}, "xp": {}, "gear": {}}
+	var p := {"name": name, "role": role, "skills": {}, "xp": {}, "gear": {}, "lands": true}
+	for slot in ROLE_GEAR.get(role, []):
+		p.gear[slot] = {"id": slot, "mk": 1, "cond": 80}
 	for id in SKILLS:
 		p.skills[id] = 0
 		p.xp[id] = 0
