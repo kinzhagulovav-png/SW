@@ -13,6 +13,7 @@ const TAKEOFF_DIST := 14.0
 const CHUNK := 32 ## размер куска поверхности в клетках
 const VEIN_LEVEL := 0.42
 const REACH := 6.5 ## дальность лапатрона
+const INTERIOR := Vector3(0, -420, 0) ## где стоит внутренность корабля (глубоко под землёй)
 
 var planet: Dictionary
 var B: Dictionary
@@ -46,6 +47,20 @@ var items: Array[Dictionary] = []
 var beasts: Array[Dictionary] = []
 var trip := {"minerals": {}, "samples": []}
 var leaving := false
+var profile: Dictionary   # Biomes.profile: радиация, кислород, минералы планеты
+var inside := false       # игрок внутри корабля
+var cover := false
+var t_open := 0.0         # сколько секунд подряд на открытой местности
+var t_bay := 0.0          # сколько секунд в отсеке ремонта
+var _warned := {}
+var _bay_ring: MeshInstance3D
+var _bay_light: OmniLight3D
+var _radar: Control
+var _o2_bar: ProgressBar
+var _rad_bar: ProgressBar
+var _armor_bar: ProgressBar
+var _env_label: Label
+var _env: Environment
 
 var _hp_bar: ProgressBar
 var _jet_bar: ProgressBar
@@ -75,6 +90,8 @@ func _ready() -> void:
 	B = Biomes.DATA[planet.biome]
 	water = B.water
 	rng.seed = planet.seed
+	profile = Biomes.profile(planet)
+	hp = GameState.health
 	_setup_noise()
 	_build_heights()
 	_build_environment()
@@ -86,12 +103,14 @@ func _ready() -> void:
 	_build_items()
 	_build_creatures()
 	_build_ship()
+	_build_interior()
 	_build_player()
 	_build_ui()
 	jet_max = JET_MAX * (1.7 if GameState.has_device("jetpack2") else 1.0)
 	jet = jet_max
 	GameState.stats.landings += 1
 	rng.randomize()  # планета уже построена, дальше добыча случайна
+	_notify("Фон радиации: %s" % Biomes.rad_text(profile.rad), Color("#ffbf55"))
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -311,6 +330,7 @@ func _build_environment() -> void:
 	env.fog_light_color = B.sky_hor
 	env.fog_density = 0.008 if planet.biome == "volcano" else 0.005
 	env.fog_aerial_perspective = 0.4
+	_env = env
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -609,11 +629,15 @@ func _build_items() -> void:
 	octa.radius = 0.5
 	octa.height = 1.0
 	var mats := {}
-	for i in 30:
+	var allowed: Array = profile.minerals
+	# Не на каждой планете есть минералы, и выходы на поверхность редки.
+	for i in (rng.randi_range(6, 12) if not allowed.is_empty() else 0):
 		var p = _spot(140.0, 0.6)
 		if p == null:
 			continue
-		var mid := Items.roll_mineral(rng, planet.biome, rng.randf() * 3.0)
+		var mid := Items.roll_mineral(rng, planet.biome, 8.0, allowed)
+		if mid == "":
+			continue
 		if not mats.has(mid):
 			var c: Color = Items.MINERALS[mid].color
 			var cm := StandardMaterial3D.new()
@@ -871,7 +895,7 @@ func _build_lapatron() -> void:
 func _select_tool(i: int) -> void:
 	tool_index = i
 	for k in _tools.size():
-		_tools[k].visible = k == i
+		_tools[k].visible = k == i and not inside
 	tool = _tools[i]
 
 
@@ -902,7 +926,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_ESCAPE:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			KEY_E:
-				_try_takeoff()
+				_interact()
 			KEY_1:
 				_select_tool(0)
 			KEY_2:
@@ -922,7 +946,7 @@ func _physics_process(delta: float) -> void:
 	if Input.is_key_pressed(KEY_A): input.x -= 1
 	if Input.is_key_pressed(KEY_D): input.x += 1
 	var run := Input.is_key_pressed(KEY_SHIFT)
-	var in_liquid: bool = not water.is_empty() and player.position.y < level + 0.2 and not water.get("ice", false)
+	var in_liquid: bool = not inside and not water.is_empty() and player.position.y < level + 0.2 and not water.get("ice", false)
 	var speed := (RUN if run else WALK) * (0.55 if in_liquid and not water.get("lava", false) else 1.0)
 	var dir := (player.transform.basis * Vector3(input.x, 0, input.y)).normalized()
 	player.velocity.x = dir.x * speed
@@ -936,18 +960,15 @@ func _physics_process(delta: float) -> void:
 	if in_liquid and not water.get("lava", false):
 		player.velocity.y = max(player.velocity.y, 0.0) if player.position.y < level - 0.6 else player.velocity.y
 	player.move_and_slide()
-	player.position.x = clamp(player.position.x, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
-	player.position.z = clamp(player.position.z, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
+	if not inside:
+		player.position.x = clamp(player.position.x, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
+		player.position.z = clamp(player.position.z, -SIZE / 2.0 + 4, SIZE / 2.0 - 4)
 	if in_liquid and water.get("lava", false):
 		_hurt(30.0 * delta)
 	var walking := input != Vector2.ZERO and player.is_on_floor()
 	if walking:
 		bob += delta * (11.0 if run else 7.0)
 	cam.position.y = 0.7 + sin(bob) * 0.05
-
-
-func _hurt(amount: float) -> void:
-	hp -= amount * (0.6 if GameState.has_device("suit") else 1.0)
 
 
 func _use_medkit() -> void:
@@ -983,7 +1004,7 @@ func _process(delta: float) -> void:
 		if d < 2.6:
 			_hurt(12.0 * delta)
 	shot_cd -= delta
-	var use := Input.is_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+	var use := not inside and (Input.is_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED))
 	if use and shot_cd <= 0.0:
 		if tool_index == 0:
 			shot_cd = 0.2 if GameState.has_device("blaster2") else 0.3
@@ -999,17 +1020,31 @@ func _process(delta: float) -> void:
 	recoil = max(0.0, recoil - delta * 0.6)
 	var base := Vector3(0.19, -0.15, -0.36) if tool_index == 0 else Vector3(0.24, -0.26, -0.5)
 	tool.position = base + Vector3(cos(bob * 0.5) * 0.006, abs(sin(bob * 0.5)) * 0.008, recoil)
-	hp = min(100.0, hp + 0.4 * delta)
+	if inside:
+		_suit_inside(delta)
+	else:
+		_suit_outside(delta)
 	if hp <= 0.0:
 		_die()
 		return
 	var to_ship := ship.global_position.distance_to(player.global_position)
 	_hp_bar.value = hp
 	_jet_bar.value = jet / jet_max * 100.0
+	_o2_bar.value = GameState.suit.oxygen
+	_rad_bar.value = GameState.suit.rad
+	_armor_bar.value = GameState.suit.armor
+	if inside:
+		_env_label.text = "На корабле" if _ship_zone() != "bay" else "Отсек ремонта: восстановление ×%.1f" % (1.0 + t_bay / 6.0)
+		_env_label.add_theme_color_override("font_color", Color("#76e8a0"))
+	else:
+		_env_label.text = "Фон %s · %s" % [Biomes.rad_text(profile.rad), "укрытие" if cover else "открытая местность %d с" % int(t_open)]
+		_env_label.add_theme_color_override("font_color", Color("#9ad8ff") if cover else Color("#ffbf55"))
 	var found := 0
 	for k in trip.minerals:
 		found += int(trip.minerals[k])
-	_info.text = "Минералы: %d   Образцы: %d   До корабля: %d м" % [found, trip.samples.size(), int(to_ship)]
+	_info.text = "Минералы: %d   Образцы: %d" % [found, trip.samples.size()]
+	if not inside:
+		_info.text += "   До корабля: %d м" % int(to_ship)
 	_tool_label.text = "[1] Бластер%s     [2] Лапатрон%s" % [
 		" Мк-2" if GameState.has_device("blaster2") else "", " Мк-2" if GameState.has_device("lapatron2") else ""]
 	_tool_label.add_theme_color_override("font_color", Color("#6fdcff") if tool_index == 0 else Color("#ffbf55"))
@@ -1018,8 +1053,10 @@ func _process(delta: float) -> void:
 		var hit = _aim_ground()
 		if hit != null and (hit as Vector3).y < orig_heights_at(hit) - max_depth() + 0.05:
 			hint = "Глубже лапатрон не берёт"
-	if to_ship < TAKEOFF_DIST:
-		hint = "Нажмите E, чтобы взлететь"
+	if inside:
+		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
+	elif to_ship < TAKEOFF_DIST:
+		hint = "E: подняться на корабль"
 	_prompt.text = hint
 	_time.text = GameState.time_text()
 	_feed_time -= delta
@@ -1146,16 +1183,30 @@ func _add_sample(depth: float) -> void:
 	_notify("Найден неизвестный образец! Изучите его в лаборатории корабля.", Color("#9aff6a"))
 
 
-## Добыча из недр: чем глубже, тем больше редких минералов; на жиле добыча богаче.
+## Добыча из недр. Минералы лежат только в жилах (сканер недр их показывает),
+## у каждой жилы свой главный минерал, а набор минералов у каждой планеты свой.
+## Глубже попадаются редкие. Вне жил почти пусто.
 func _dig_loot(p: Vector3) -> void:
 	var depth: float = max(0.0, orig_heights_at(p) - ground(p.x, p.z))
+	var allowed: Array = profile.minerals
 	var rich := _vein(p.x, p.z) > VEIN_LEVEL
-	var chance: float = 0.22 + min(depth, 10.0) * 0.03 + (0.35 if rich else 0.0)
-	if rng.randf() < chance:
-		var id := Items.roll_mineral(rng, planet.biome, depth + (2.0 if rich else 0.0))
-		_add_mineral(id, rng.randi_range(1, 3 if rich else 2))
-	if depth > 1.5 and rng.randf() < min(0.02 + depth * 0.006, 0.1):
+	if not allowed.is_empty():
+		var chance: float = (0.45 + min(depth, 10.0) * 0.03) if rich else 0.03
+		if rng.randf() < chance:
+			var id := Items.roll_mineral(rng, planet.biome, depth, allowed, _vein_mineral(p))
+			if id != "":
+				_add_mineral(id, rng.randi_range(1, 3) if rich else 1)
+	if depth > 1.5 and rng.randf() < min(0.015 + depth * 0.005, 0.08):
 		_add_sample(depth)
+
+
+## Главный минерал жилы: зависит от участка 24×24 м.
+func _vein_mineral(p: Vector3) -> String:
+	var allowed: Array = profile.minerals
+	if allowed.is_empty():
+		return ""
+	var h := absi(hash(Vector2i(floori(p.x / 24.0), floori(p.z / 24.0))) + int(planet.seed))
+	return allowed[h % allowed.size()]
 
 
 ## Опускает землю вокруг точки. Возвращает false, если копать больше некуда.
@@ -1204,13 +1255,20 @@ func _dig(p: Vector3, strength: float) -> bool:
 	return true
 
 
-func _try_takeoff() -> void:
-	if ship.global_position.distance_to(player.global_position) < TAKEOFF_DIST:
-		_leave()
+func _interact() -> void:
+	if inside:
+		match _ship_zone():
+			"hatch":
+				_exit_ship()
+			"cockpit":
+				_leave()
+	elif ship.global_position.distance_to(player.global_position) < TAKEOFF_DIST:
+		_enter_ship()
 
 
 func _leave() -> void:
 	leaving = true
+	GameState.health = hp
 	for id in trip.minerals:
 		GameState.add_item(id, int(trip.minerals[id]))
 		GameState.stats.minerals += int(trip.minerals[id])
@@ -1224,6 +1282,7 @@ func _leave() -> void:
 ## Капитан погиб: конец игры, титры во славу исследователя.
 func _die() -> void:
 	leaving = true
+	GameState.health = 100.0
 	GameState.death = {"planet": planet.name, "biome": B.name}
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	get_tree().change_scene_to_file("res://scenes/ui/credits.tscn")
@@ -1240,6 +1299,232 @@ func _notify(text: String, col: Color) -> void:
 		var old := _feed.get_child(0)
 		_feed.remove_child(old)
 		old.queue_free()
+
+
+# ---------- Скафандр ----------
+
+## Укрытие от излучения: глубокая яма (вырытая лапатроном) или место под корпусом корабля.
+func _in_cover() -> bool:
+	var p := player.position
+	var dug := orig_heights_at(p) - ground(p.x, p.z)
+	if dug > 1.6 and p.y < orig_heights_at(p) + 0.5:
+		return true
+	return Vector2(p.x, p.z).distance_to(Vector2(ship.position.x, ship.position.z)) < 4.5
+
+
+func _suit_outside(delta: float) -> void:
+	var suit: Dictionary = GameState.suit
+	var protect := 0.6 if GameState.has_device("suit") else 1.0
+	# Кислород.
+	suit.oxygen = max(0.0, suit.oxygen - 100.0 / 240.0 * float(profile.o2) * delta)
+	if suit.oxygen <= 0.0:
+		hp -= 4.0 * delta
+	# Радиация: на открытой местности защита тает всё быстрее, в укрытии медленно.
+	cover = _in_cover()
+	var rad: float = profile.rad
+	var rate: float
+	if cover:
+		t_open = max(0.0, t_open - delta * 3.0)
+		rate = rad * 0.08
+	else:
+		t_open += delta
+		rate = rad * 0.22 * (1.0 + t_open / 60.0)
+	suit.rad = max(0.0, suit.rad - rate * protect * delta)
+	if suit.rad <= 0.0:
+		hp -= rad * 1.5 * delta
+	for key in ["oxygen", "rad", "armor"]:
+		var low: bool = suit[key] < 25.0
+		if low and not _warned.get(key, false):
+			_notify({"oxygen": "Мало кислорода! Вернитесь на корабль.",
+				"rad": "Радзащита на исходе! Нужен отсек ремонта на корабле.",
+				"armor": "Броня почти разбита!"}[key], Color("#ff6a4a"))
+		_warned[key] = low
+
+
+## Урон от животных и лавы: сначала его принимает броня скафандра.
+func _hurt(amount: float) -> void:
+	var a := amount * (0.6 if GameState.has_device("suit") else 1.0)
+	var suit: Dictionary = GameState.suit
+	if suit.armor > 0.0:
+		suit.armor = max(0.0, suit.armor - a * 0.8)
+		hp -= a * 0.25
+	else:
+		hp -= a
+
+
+# ---------- Корабль изнутри ----------
+
+func _solid(size: Vector3, pos: Vector3, mat: Material) -> void:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	bm.material = mat
+	mi.mesh = bm
+	mi.position = INTERIOR + pos
+	add_child(mi)
+	var body := StaticBody3D.new()
+	var shape := CollisionShape3D.new()
+	var bs := BoxShape3D.new()
+	bs.size = size
+	shape.shape = bs
+	body.add_child(shape)
+	body.position = INTERIOR + pos
+	add_child(body)
+
+
+func _deco(size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	bm.material = mat
+	mi.mesh = bm
+	mi.position = INTERIOR + pos
+	add_child(mi)
+	return mi
+
+
+func _sign(text: String, pos: Vector3, rot_y: float, col: Color) -> void:
+	var l := Label3D.new()
+	l.text = text
+	l.font_size = 64
+	l.pixel_size = 0.003
+	l.modulate = col
+	l.outline_size = 8
+	l.position = INTERIOR + pos
+	l.rotation.y = rot_y
+	add_child(l)
+
+
+func _lamp(pos: Vector3, col: Color, energy: float, rng_m: float) -> void:
+	var l := OmniLight3D.new()
+	l.light_color = col
+	l.light_energy = energy
+	l.omni_range = rng_m
+	l.position = INTERIOR + pos
+	add_child(l)
+
+
+## Внутри корабля: коридор от шлюза к кабине, сбоку отсек ремонта оборудования.
+## Отсек стоит глубоко под поверхностью, его не видно снаружи.
+func _build_interior() -> void:
+	var wall := ShipBuilder.metal(Color("#b4bcc8"), 0.6, 0.45)
+	var dark := ShipBuilder.metal(Color("#3a404a"), 0.7, 0.5)
+	var floor_m := ShipBuilder.metal(Color("#4a505c"), 0.8, 0.35)
+	var strip := ShipBuilder.unshaded(Color(0.6, 1.6, 2.4))
+	var warm := ShipBuilder.unshaded(Color(2.4, 1.5, 0.5))
+	# Пол и потолок общие для всех помещений.
+	_solid(Vector3(14, 0.3, 22), Vector3(0, -0.15, -2), floor_m)
+	_solid(Vector3(14, 0.3, 22), Vector3(0, 3.0, -2), dark)
+	# Коридор: x от -1.5 до 1.5, z от -6 до 7.
+	_solid(Vector3(0.3, 3, 13), Vector3(-1.65, 1.5, 0.5), wall)       # левая стена
+	_solid(Vector3(0.3, 3, 3), Vector3(1.65, 1.5, -4.5), wall)        # правая стена до двери
+	_solid(Vector3(0.3, 3, 5), Vector3(1.65, 1.5, 4.5), wall)         # правая стена после двери
+	_solid(Vector3(0.3, 0.6, 2.0), Vector3(1.65, 2.7, -2.0), wall)    # над дверью
+	_solid(Vector3(3.6, 3, 0.3), Vector3(0, 1.5, 7.15), dark)          # шлюз (выход)
+	_deco(Vector3(1.6, 2.3, 0.05), Vector3(0, 1.2, 6.98), warm)
+	_sign("Шлюз · E: выйти наружу", Vector3(0, 2.6, 6.9), PI, Color("#ffbf55"))
+	for z in [-4.0, -1.0, 2.0, 5.0]:
+		_deco(Vector3(2.6, 0.04, 0.12), Vector3(0, 2.83, z), strip)
+		_lamp(Vector3(0, 2.4, z), Color(0.75, 0.9, 1.0), 0.9, 6.0)
+	# Отсек ремонта оборудования: x от 1.8 до 7, z от -3 до 3 (дверь в коридоре z от -3 до -1).
+	_solid(Vector3(5.4, 3, 0.3), Vector3(4.5, 1.5, -3.15), wall)
+	_solid(Vector3(5.4, 3, 0.3), Vector3(4.5, 1.5, 3.15), wall)
+	_solid(Vector3(0.3, 3, 6.6), Vector3(7.15, 1.5, 0), wall)
+	_sign("Отсек ремонта оборудования", Vector3(1.4, 2.55, -2.0), -PI / 2.0, Color("#6fdcff"))
+	var ring := MeshInstance3D.new()
+	var tm := TorusMesh.new()
+	tm.inner_radius = 1.0
+	tm.outer_radius = 1.15
+	tm.material = ShipBuilder.unshaded(Color(0.4, 2.6, 1.6))
+	ring.mesh = tm
+	ring.position = INTERIOR + Vector3(4.5, 0.03, 0)
+	add_child(ring)
+	_bay_ring = ring
+	_deco(Vector3(0.6, 1.2, 2.2), Vector3(6.6, 0.6, 0), dark)          # верстак
+	_deco(Vector3(0.05, 0.7, 1.6), Vector3(6.28, 1.6, 0), ShipBuilder.unshaded(Color(0.3, 1.2, 2.2)))
+	_deco(Vector3(0.5, 1.9, 0.6), Vector3(6.6, 1.0, -2.3), ShipBuilder.metal(Color("#e8eaee"), 0.3, 0.5))  # стойка со скафандром
+	_deco(Vector3(0.4, 0.4, 0.05), Vector3(6.6, 2.15, -2.0), ShipBuilder.unshaded(Color(1.4, 1.8, 2.4)))
+	_lamp(Vector3(4.5, 2.5, 0), Color(0.6, 1.0, 0.85), 1.6, 7.0)
+	_bay_light = OmniLight3D.new()
+	_bay_light.light_color = Color(0.4, 1.0, 0.7)
+	_bay_light.omni_range = 4.0
+	_bay_light.light_energy = 0.0
+	_bay_light.position = INTERIOR + Vector3(4.5, 0.6, 0)
+	add_child(_bay_light)
+	# Кабина: z от -6 до -10, шире коридора.
+	_solid(Vector3(0.3, 3, 4.5), Vector3(-2.65, 1.5, -8.0), wall)
+	_solid(Vector3(0.3, 3, 4.5), Vector3(2.65, 1.5, -8.0), wall)
+	_solid(Vector3(1.2, 3, 0.3), Vector3(-2.1, 1.5, -5.85), wall)
+	_solid(Vector3(1.2, 3, 0.3), Vector3(2.1, 1.5, -5.85), wall)
+	_solid(Vector3(5.6, 3, 0.3), Vector3(0, 1.5, -10.25), dark)
+	var view := ShipBuilder.unshaded(Color(B.sky_hor) * 1.1)
+	_deco(Vector3(4.4, 1.3, 0.05), Vector3(0, 1.9, -10.08), view)      # обзорное окно
+	_deco(Vector3(4.6, 0.9, 0.9), Vector3(0, 0.45, -9.4), dark)        # пульт
+	for x in [-1.4, 0.0, 1.4]:
+		_deco(Vector3(0.9, 0.04, 0.5), Vector3(x, 0.92, -9.3), ShipBuilder.unshaded(Color(0.4, 1.6, 2.6) if x != 0.0 else Color(2.4, 1.4, 0.4)))
+	_deco(Vector3(0.8, 0.5, 0.8), Vector3(0, 0.45, -8.2), floor_m)      # кресло пилота
+	_deco(Vector3(0.8, 1.0, 0.15), Vector3(0, 1.1, -7.8), floor_m)
+	_sign("Кабина · E: взлететь", Vector3(0, 2.6, -6.05), 0.0, Color("#ffbf55"))
+	_lamp(Vector3(0, 2.3, -8.5), Color(1.0, 0.85, 0.6), 1.2, 6.0)
+
+
+func _enter_ship() -> void:
+	inside = true
+	player.position = INTERIOR + Vector3(0, 1.0, 5.2)
+	player.velocity = Vector3.ZERO
+	yaw = 0.0
+	pitch = 0.0
+	tool.visible = false
+	_radar.visible = false
+	_tool_label.visible = false
+	# Внутри нет тумана атмосферы и неба, только свои лампы.
+	_env.fog_enabled = false
+	_env.ambient_light_energy = 0.3
+	_notify("Вы на корабле. Кислород пополняется.", Color("#9ad8ff"))
+
+
+func _exit_ship() -> void:
+	inside = false
+	var out := ship.position + Vector3(3.5, 0, 3.5)
+	player.position = Vector3(out.x, ground(out.x, out.z) + 1.2, out.z)
+	player.velocity = Vector3.ZERO
+	t_open = 0.0
+	_select_tool(tool_index)
+	_radar.visible = true
+	_tool_label.visible = true
+	_env.fog_enabled = true
+	_env.ambient_light_energy = 0.9
+
+
+## Где игрок внутри корабля: "bay" (отсек ремонта), "cockpit", "hatch" или "".
+func _ship_zone() -> String:
+	var p := player.position - INTERIOR
+	if p.x > 1.8:
+		return "bay"
+	if p.z < -6.2:
+		return "cockpit"
+	if p.z > 4.6:
+		return "hatch"
+	return ""
+
+
+func _suit_inside(delta: float) -> void:
+	var suit: Dictionary = GameState.suit
+	suit.oxygen = min(100.0, suit.oxygen + 25.0 * delta)
+	hp = min(100.0, hp + 1.0 * delta)
+	var zone := _ship_zone()
+	if zone == "bay":
+		# Чем дольше в отсеке, тем быстрее идёт восстановление.
+		t_bay += delta
+		var rate := 1.5 * (1.0 + t_bay / 6.0)
+		suit.rad = min(100.0, suit.rad + rate * delta)
+		suit.armor = min(100.0, suit.armor + rate * delta)
+	else:
+		t_bay = 0.0
+	_bay_ring.rotation.y += delta * (0.5 + t_bay * 0.3)
+	_bay_light.light_energy = min(3.0, t_bay * 0.4) if zone == "bay" else 0.0
+	for key in ["oxygen", "rad", "armor"]:
+		_warned[key] = false
 
 
 # ---------- Интерфейс ----------
@@ -1271,12 +1556,18 @@ func _build_ui() -> void:
 	col.add_child(_time)
 	_hp_bar = _bar(col, "Здоровье", Color("#76e8a0"))
 	_jet_bar = _bar(col, "Ранец", Color("#ffbf55"))
+	_o2_bar = _bar(col, "Кислород", Color("#8ad0ff"))
+	_rad_bar = _bar(col, "Радзащита", Color("#d0e040"))
+	_armor_bar = _bar(col, "Броня", Color("#b0b8c8"))
+	_env_label = Label.new()
+	_env_label.add_theme_font_size_override("font_size", 17)
+	col.add_child(_env_label)
 	_info = Label.new()
 	col.add_child(_info)
 
 	var help := Label.new()
 	help.theme = theme
-	help.text = "WASD: идти, Shift: бег, пробел: ранец\nМышь: обзор, ЛКМ или F: применить инструмент\n1: бластер, 2: лапатрон (копать и добывать), колесо: сменить\nH: аптечка, E у корабля: взлететь, Esc: курсор"
+	help.text = "WASD: идти, Shift: бег, пробел: ранец\nМышь: обзор, ЛКМ или F: применить инструмент\n1: бластер, 2: лапатрон (копать и добывать), колесо: сменить\nH: аптечка, E у корабля: подняться на борт, Esc: курсор\nЯмы и корпус корабля укрывают от излучения"
 	help.add_theme_color_override("font_color", Color(0.9, 0.92, 1.0))
 	help.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
 	help.anchor_left = 1.0
@@ -1324,6 +1615,7 @@ func _build_ui() -> void:
 	layer.add_child(_feed)
 
 	var radar := PlanetRadar.new()
+	_radar = radar
 	radar.surface = self
 	radar.anchor_top = 1.0
 	radar.anchor_bottom = 1.0

@@ -727,7 +727,7 @@ func _set_status() -> void:
 		_status_label.text = "Пристыкованы к научной станции."
 	elif near.begins_with("planet"):
 		var p: Dictionary = planets[int(near.substr(6))]
-		_status_label.text = "На орбите планеты %s (%s). Можно высаживаться." % [p.name, Biomes.DATA[p.biome].name]
+		_status_label.text = "Орбита планеты %s (%s). Фон радиации: %s." % [p.name, Biomes.DATA[p.biome].name, Biomes.rad_text(Biomes.profile(p).rad)]
 	elif not target.is_empty():
 		_status_label.text = "Летим…"
 	else:

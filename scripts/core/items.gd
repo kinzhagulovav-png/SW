@@ -89,24 +89,34 @@ static func name_of(id: String) -> String:
 
 
 ## Случайный минерал для биома с учётом глубины копания.
-static func roll_mineral(rng: RandomNumberGenerator, biome: String, depth: float) -> String:
+## Случайный минерал с учётом глубины копания. allowed: какие минералы вообще есть на планете,
+## prefer: минерал этой жилы (встречается в 4 раза чаще). Пустая строка, если подходящих нет.
+static func roll_mineral(rng: RandomNumberGenerator, biome: String, depth: float, allowed: Array = [], prefer: String = "") -> String:
 	var bias: Dictionary = BIOME_BIAS.get(biome, {})
 	var total := 0.0
 	var weights := {}
 	for id in MINERALS:
+		if not allowed.is_empty() and not allowed.has(id):
+			continue
 		var m: Dictionary = MINERALS[id]
 		if depth < float(m.depth):
 			continue
 		# Глубже редкие минералы встречаются чаще.
 		var w: float = float(m.weight) * float(bias.get(id, 1.0)) * (1.0 + depth * float(m.depth) * 0.05)
+		if id == prefer:
+			w *= 4.0
+		if w <= 0.0:
+			continue
 		weights[id] = w
 		total += w
+	if total <= 0.0:
+		return ""
 	var r := rng.randf() * total
 	for id in weights:
 		r -= weights[id]
 		if r <= 0.0:
 			return id
-	return "fe"
+	return weights.keys()[0]
 
 
 ## Новый неизвестный образец. level: сложность изучения (1..3).

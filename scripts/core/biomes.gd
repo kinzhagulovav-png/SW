@@ -45,3 +45,42 @@ const DATA := {
 		"grass_h": 1.1, "grass_cover": 0.8, "danger": 1.2,
 	},
 }
+
+
+## Фон радиации по биомам (мЗв/ч, условно). У каждой планеты он ещё умножается на 0,6–1,6.
+const RAD_BASE := {"desert": 1.0, "ice": 0.6, "jungle": 0.35, "volcano": 1.9, "toxic": 2.6}
+## Расход кислорода: в джунглях атмосфера частично пригодна, фильтры тратят меньше.
+const O2_USE := {"desert": 1.0, "ice": 1.0, "jungle": 0.5, "volcano": 1.3, "toxic": 1.2}
+
+
+## Постоянные свойства конкретной планеты по её сиду: радиация и какие минералы в недрах.
+## Примерно каждая седьмая планета пустая: минералов нет совсем.
+static func profile(planet: Dictionary) -> Dictionary:
+	var r := RandomNumberGenerator.new()
+	r.seed = int(planet.seed) + 9157
+	var biome: String = planet.biome
+	var minerals: Array[String] = []
+	if r.randf() > 0.15:
+		var want := r.randi_range(2, 5)
+		var tries := 0
+		while minerals.size() < want and tries < 60:
+			tries += 1
+			var id := Items.roll_mineral(r, biome, r.randf_range(0.0, 8.0))
+			if id != "" and not minerals.has(id):
+				minerals.append(id)
+	return {
+		"rad": float(RAD_BASE[biome]) * r.randf_range(0.6, 1.6),
+		"o2": float(O2_USE[biome]),
+		"minerals": minerals,
+	}
+
+
+static func rad_text(rad: float) -> String:
+	var word := "низкий"
+	if rad > 2.5:
+		word = "смертельный"
+	elif rad > 1.6:
+		word = "высокий"
+	elif rad > 0.8:
+		word = "средний"
+	return "%.1f мЗв/ч (%s)" % [rad, word]

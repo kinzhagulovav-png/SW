@@ -23,6 +23,10 @@ var crew: Array[Dictionary] = []
 ## Навыки капитана. science растёт от изучения образцов.
 var skills := {"science": 0}
 var science_xp := 0
+## Здоровье капитана и скафандр: кислород, защита от радиации, броня (всё от 0 до 100).
+## Радзащиту и броню восстанавливает только отсек ремонта оборудования на корабле.
+var health := 100.0
+var suit := {"oxygen": 100.0, "rad": 100.0, "armor": 100.0}
 ## Для итогов в титрах.
 var stats := {"minerals": 0, "samples": 0, "landings": 0, "beasts": 0, "dug": 0}
 ## Где и как погиб капитан (для титров).
@@ -52,6 +56,8 @@ func reset() -> void:
 	crew.clear()
 	skills = {"science": 0}
 	science_xp = 0
+	health = 100.0
+	suit = {"oxygen": 100.0, "rad": 100.0, "armor": 100.0}
 	stats = {"minerals": 0, "samples": 0, "landings": 0, "beasts": 0, "dug": 0}
 	current_planet = {}
 	system_state = {}

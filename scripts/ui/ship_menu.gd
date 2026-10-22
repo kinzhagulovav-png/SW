@@ -134,6 +134,8 @@ func _button(row: Control, text: String, enabled: bool, action: Callable) -> voi
 # ---------- Трюм ----------
 
 func _fill_hold(box: VBoxContainer) -> void:
+	var su: Dictionary = GameState.suit
+	_label(box, "Скафандр: кислород %d%%, радзащита %d%%, броня %d%%.  Здоровье: %d.  Радзащиту и броню чинит отсек ремонта на корабле во время высадки." % [su.oxygen, su.rad, su.armor, GameState.health], Color("#d0e040"), 18)
 	var groups := [["Минералы", Items.MINERALS], ["Материалы", Items.MATERIALS], ["Базовые элементы", Items.BASICS], ["Приборы и вещи", Items.DEVICES]]
 	var empty := true
 	for g in groups:
