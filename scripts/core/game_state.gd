@@ -131,6 +131,10 @@ func team_level(skill: String) -> int:
 	return best
 
 
+func max_health() -> float:
+	return People.max_hp(hero)
+
+
 func gear(slot: String) -> Dictionary:
 	return hero.gear.get(slot, {})
 

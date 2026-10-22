@@ -8,12 +8,14 @@ extends RefCounted
 ## Персонаж: {"name", "role", "skills": {id: уровень}, "xp": {id: опыт}, "gear": {слот: {"id","mk","cond"}}}
 
 const MAX_LEVEL := 10
+## Запас здоровья по роли. Выносливость добавляет по 8 за уровень.
+const ROLE_HP := {"капитан": 100, "учёный": 80, "второй пилот": 90, "боец": 140, "механик": 110}
 
 const SKILLS := {
 	"accuracy": {"name": "Точность", "color": Color("#ff7a5a"),
 		"desc": "Урон бластера +8% за уровень и легче попасть. Опыт: попадания и победы над зверями."},
 	"endurance": {"name": "Выносливость", "color": Color("#ffb04a"),
-		"desc": "Кислород и радзащита тратятся на 4% медленнее за уровень, здоровье восстанавливается. Опыт: время на открытой местности."},
+		"desc": "Здоровье +8 за уровень, кислород и радзащита тратятся на 4% медленнее, здоровье восстанавливается. Опыт: время на открытой местности."},
 	"geology": {"name": "Геология", "color": Color("#d8a060"),
 		"desc": "Шанс найти лишний минерал при раскопках +6% за уровень, детектор видит дальше. Опыт: найденные минералы и образцы."},
 	"science": {"name": "Наука", "color": Color("#9aff6a"),
@@ -75,6 +77,10 @@ static func starter_gear() -> Dictionary:
 		if slot != "detector":
 			g[slot] = {"id": slot, "mk": 1, "cond": 90}
 	return g
+
+
+static func max_hp(p: Dictionary) -> float:
+	return float(ROLE_HP.get(p.get("role", ""), 100)) + 8.0 * level(p, "endurance")
 
 
 static func level(p: Dictionary, skill: String) -> int:
@@ -140,7 +146,7 @@ static func boots_mult(e: Dictionary) -> float:
 
 
 static func weapon_damage(e: Dictionary) -> float:
-	return power(e) if not e.is_empty() else 0.0
+	return power(e) * 20.0 if not e.is_empty() else 0.0
 
 
 static func weapon_cooldown(e: Dictionary) -> float:
@@ -177,7 +183,7 @@ static func effect_text(e: Dictionary) -> String:
 		"boots":
 			return "скорость ×%.2f" % boots_mult(e)
 		"weapon":
-			return "урон %.1f, выстрел раз в %.2f с" % [weapon_damage(e), weapon_cooldown(e)]
+			return "урон %d, выстрел раз в %.2f с" % [int(weapon_damage(e)), weapon_cooldown(e)]
 		"jetpack":
 			return "полёт %.1f с" % (1.6 * jet_mult(e))
 		"backpack":

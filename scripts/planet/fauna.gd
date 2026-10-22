@@ -63,12 +63,16 @@ static func species_for(planet: Dictionary, profile: Dictionary, biome_data: Dic
 			"color": col,
 			"glow": Color.from_hsv(r.randf(), 0.8, 1.0) * 2.5 if mutant else Color(3.5, 2.2, 0.5),
 			"size": float(st.size) * r.randf_range(0.8, 1.35) * (1.25 if mutant else 1.0),
-			"hp": int(st.hp) + (2 if mutant else 0),
+			"hp": 0,
 			"dmg": float(st.dmg) * (1.5 if mutant else 1.0) * danger,
 			"walk": float(st.walk),
 			"run": float(st.run) * (1.15 if mutant else 1.0),
 			"count": r.randi_range(2, 5) if plan != "rockback" else r.randi_range(1, 3),
 		})
+	# Запас здоровья: от тела, размера и мутации. Крупные и мутанты крепче.
+	for sp in out:
+		var st: Dictionary = PLAN_STATS[sp.plan]
+		sp.hp = int(round((float(st.hp) * 20.0 + (40.0 if sp.mutant else 0.0)) * float(sp.size) / float(st.size)))
 	return out
 
 

@@ -71,6 +71,7 @@ var _lab_glow: Array[MeshInstance3D] = []
 var _lab_time := 0.0
 
 var _hp_bar: ProgressBar
+var _hp_text: Label
 var _jet_bar: ProgressBar
 var _info: Label
 var _prompt: Label
@@ -728,7 +729,12 @@ func _build_creatures() -> void:
 			c["sp"] = sp
 			c["home"] = home
 			c["target"] = home
-			c["hp"] = int(sp.hp)
+			# У каждой особи свой запас здоровья: ±20% от вида.
+			c["max_hp"] = round(float(sp.hp) * rng.randf_range(0.8, 1.2))
+			c["hp"] = c.max_hp
+			c["bar"] = HealthBar.make(c.max_hp, HealthBar.temper_color(sp.temper))
+			c.bar.position.y = 2.9  # узел зверя уже масштабирован по размеру
+			c.node.add_child(c.bar)
 			c["angry"] = sp.temper == "aggressive"
 			c["scared"] = 0.0
 			c["phase"] = rng.randf() * TAU
@@ -971,10 +977,10 @@ func _use_medkit() -> void:
 	if GameState.count("medkit") <= 0:
 		_notify("Аптечек нет. Их делают на научной станции.", Color("#ff8a6a"))
 		return
-	if hp >= 100.0:
+	if hp >= GameState.max_health():
 		return
 	GameState.add_item("medkit", -1)
-	hp = min(100.0, hp + 60.0)
+	hp = min(GameState.max_health(), hp + 60.0)
 	_notify("Аптечка: +60 здоровья", Color("#76e8a0"))
 
 
@@ -1021,7 +1027,9 @@ func _process(delta: float) -> void:
 		_die()
 		return
 	var to_ship := ship.global_position.distance_to(player.global_position)
+	_hp_bar.max_value = GameState.max_health()
 	_hp_bar.value = hp
+	_hp_text.text = "%d/%d" % [ceili(hp), int(GameState.max_health())]
 	_jet_bar.value = jet / jet_max * 100.0
 	_o2_bar.value = GameState.suit.oxygen
 	_rad_bar.value = GameState.suit.rad
@@ -1048,7 +1056,7 @@ func _process(delta: float) -> void:
 	if not inside:
 		var look := _beast_in_sight()
 		if not look.is_empty():
-			hint = Fauna.describe(look.sp)
+			hint = "%s · здоровье %d из %d" % [Fauna.describe(look.sp), ceili(look.hp), int(look.max_hp)]
 	if inside:
 		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "lab": "E: научная работа (переработка, сборка, изучение образцов)", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
 	elif squad.revive_hint() != "":
@@ -1157,6 +1165,7 @@ func _shoot() -> void:
 ## Урон зверю от капитана или экипажа. Возвращает true, если зверь повержен.
 func damage_beast(b: Dictionary, dmg: float) -> bool:
 	b.hp -= dmg
+	HealthBar.set_value(b.bar, b.hp, b.max_hp)
 	# Раненый зверь: мирный убегает, остальные звереют.
 	if b.sp.temper == "passive":
 		b.scared = 6.0
@@ -1460,8 +1469,8 @@ func _suit_outside(delta: float) -> void:
 	if _endure_t >= 25.0:
 		_endure_t = 0.0
 		GameState.hero_xp("endurance", 1)
-	if GameState.lvl("endurance") > 0 and hp < 100.0:
-		hp = min(100.0, hp + 0.05 * GameState.lvl("endurance") * delta)
+	if GameState.lvl("endurance") > 0 and hp < GameState.max_health():
+		hp = min(GameState.max_health(), hp + 0.05 * GameState.lvl("endurance") * delta)
 	# Кислород.
 	suit.oxygen = max(0.0, suit.oxygen - 100.0 / 240.0 * float(profile.o2) * People.suit_o2_mult(sg) * endure * delta)
 	if suit.oxygen <= 0.0 and _use_spare("o2_can", "oxygen", 60.0):
@@ -1840,7 +1849,7 @@ func _ship_zone() -> String:
 func _suit_inside(delta: float) -> void:
 	var suit: Dictionary = GameState.suit
 	suit.oxygen = min(100.0, suit.oxygen + 25.0 * delta)
-	hp = min(100.0, hp + 1.0 * delta)
+	hp = min(GameState.max_health(), hp + 1.0 * delta)
 	var zone := _ship_zone()
 	if zone == "bay":
 		# Чем дольше в отсеке, тем быстрее идёт восстановление.
@@ -1885,6 +1894,9 @@ func _build_ui() -> void:
 	_time = Label.new()
 	col.add_child(_time)
 	_hp_bar = _bar(col, "Здоровье", Color("#76e8a0"))
+	_hp_text = Label.new()
+	_hp_text.add_theme_font_size_override("font_size", 16)
+	_hp_bar.get_parent().add_child(_hp_text)
 	_jet_bar = _bar(col, "Ранец", Color("#ffbf55"))
 	_o2_bar = _bar(col, "Кислород", Color("#8ad0ff"))
 	_rad_bar = _bar(col, "Радзащита", Color("#d0e040"))

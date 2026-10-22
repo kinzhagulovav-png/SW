@@ -175,7 +175,7 @@ func _fill_hold(box: VBoxContainer) -> void:
 		GameState.takeoff_mass(), GameState.max_lift(), "   ПЕРЕГРУЗ: корабль не взлетит!" if over else ""],
 		Color("#ff6a4a") if over else Color("#ffbf55"), 19)
 	var su: Dictionary = GameState.suit
-	_label(box, "Скафандр: кислород %d%%, радзащита %d%%, броня %d%%.  Здоровье: %d.  Радзащиту и броню чинит отсек ремонта на корабле во время высадки." % [su.oxygen, su.rad, su.armor, GameState.health], Color("#d0e040"), 18)
+	_label(box, "Скафандр: кислород %d%%, радзащита %d%%, броня %d%%.  Здоровье: %d из %d.  Радзащиту и броню чинит отсек ремонта на корабле во время высадки." % [su.oxygen, su.rad, su.armor, GameState.health, GameState.max_health()], Color("#d0e040"), 18)
 	var groups := [["Минералы", Items.MINERALS], ["Материалы", Items.MATERIALS], ["Базовые элементы", Items.BASICS], ["Приборы и вещи", Items.DEVICES]]
 	var empty := true
 	for g in groups:
@@ -485,6 +485,14 @@ func _bar(box: Control, value: float, max_value: float, col: Color, width: float
 func _fill_person(box: VBoxContainer, p: Dictionary) -> void:
 	var is_hero := is_same(p, GameState.hero)
 	_label(box, "%s · %s" % [p.name, "капитан корабля" if is_hero else p.role], Color("#ffbf55"), 24)
+	var hrow := _row(box)
+	var cur: float = GameState.health if is_hero else People.max_hp(p)
+	var hl := _label(hrow, "Здоровье", Color("#76e8a0"), 19)
+	hl.size_flags_horizontal = Control.SIZE_FILL
+	hl.custom_minimum_size = Vector2(170, 0)
+	_bar(hrow, cur, People.max_hp(p), Color("#76e8a0"), 230)
+	var hv := _label(hrow, "%d из %d  (роль %s, +8 за уровень Выносливости)" % [cur, People.max_hp(p), p.role], Color(0.9, 0.92, 1.0), 17)
+	hv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_label(box, "Навыки (уровень 0–%d). Верхняя шкала — уровень, нижняя — опыт до следующего." % People.MAX_LEVEL, Color("#6fdcff"), 20)
 	for id in People.SKILLS:
 		var sk: Dictionary = People.SKILLS[id]

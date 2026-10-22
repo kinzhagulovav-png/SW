@@ -27,9 +27,12 @@ func setup(s: Node3D) -> void:
 	for c in GameState.crew:
 		if not c.get("lands", true):
 			continue
-		var m := {"p": c, "hp": 100.0, "order": "follow", "spot": Vector3.ZERO, "target": {}, "cd": 0.0,
+		var m := {"p": c, "hp": People.max_hp(c), "max": People.max_hp(c), "order": "follow", "spot": Vector3.ZERO, "target": {}, "cd": 0.0,
 			"load": {"minerals": {}, "samples": []}, "down": false, "phase": 0.0, "slot": i, "endure": 0.0, "back_to": ""}
 		m["node"] = _make_body(c)
+		m["bar"] = HealthBar.make(m.max, Color("#7fe0ff"))
+		m.bar.position.y = 2.15
+		m.node.add_child(m.bar)
 		var pp: Vector3 = surface.player.position
 		var pos := pp + Vector3(-2.0 - i * 1.5, 0, 2.0 + i)
 		m.node.position = Vector3(pos.x, surface.ground(pos.x, pos.z), pos.z)
@@ -112,7 +115,7 @@ func _make_body(c: Dictionary) -> Node3D:
 	tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	tag.modulate = col.lightened(0.3)
 	tag.outline_size = 8
-	tag.position.y = 2.35
+	tag.position.y = 2.5
 	tag.name = "Tag"
 	g.add_child(tag)
 	return g
@@ -445,6 +448,7 @@ func _damage(m: Dictionary, amount: float) -> void:
 	if m.down:
 		return
 	m.hp = max(0.0, float(m.hp) - amount)
+	HealthBar.set_value(m.bar, m.hp, m.max)
 	if m.hp <= 0.0:
 		m.down = true
 		m.order = "wait"
@@ -474,7 +478,8 @@ func try_revive() -> bool:
 		return true
 	GameState.add_item("medkit", -1)
 	m.down = false
-	m.hp = 40.0
+	m.hp = float(m.max) * 0.4
+	HealthBar.set_value(m.bar, m.hp, m.max)
 	m.order = "follow"
 	surface._notify("%s снова на ногах." % m.p.name, Color("#76e8a0"))
 	return true
@@ -507,7 +512,7 @@ func _update_panel() -> void:
 		var m: Dictionary = members[i]
 		var state: String = "БЕЗ СОЗНАНИЯ" if m.down else ORDERS[m.order]
 		var bag := _load_size(m)
-		lines.append("%s %s · ♥%d · %s%s" % ["▶" if selected == i or selected < 0 else "  ", m.p.name, int(m.hp), state,
+		lines.append("%s %s · ♥%d/%d · %s%s" % ["▶" if selected == i or selected < 0 else "  ", m.p.name, ceili(m.hp), int(m.max), state,
 			" · рюкзак %d" % bag if bag > 0 else ""])
 	lines.append("G за мной · T ждать · V копать · B атака · X к кораблю")
 	_panel.text = "\n".join(lines)
