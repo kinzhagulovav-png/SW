@@ -169,3 +169,18 @@ static func mass_of(id: String) -> float:
 				m += mass_of(k) * int(table[id].need[k])
 			return m
 	return DEVICE_MASS
+
+
+## Базовая цена предмета в ПОТОМ: переработанное дороже сырья.
+static func price_of(id: String) -> int:
+	if MINERALS.has(id):
+		return int(MINERALS[id].price)
+	if DEVICES.has(id):
+		return int(DEVICES[id].price)
+	for pair in [[MATERIALS, 1.3], [BASICS, 1.5]]:
+		if pair[0].has(id):
+			var p := 0.0
+			for k in pair[0][id].need:
+				p += price_of(k) * int(pair[0][id].need[k])
+			return int(p * pair[1])
+	return 1

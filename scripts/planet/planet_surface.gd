@@ -996,7 +996,7 @@ func _process(delta: float) -> void:
 	_rad_bar.value = GameState.suit.rad
 	_armor_bar.value = GameState.suit.armor
 	if inside:
-		_env_label.text = ("Груз %d/%d кг%s · " % [GameState.cargo_mass(), GameState.SHIP_MAX_CARGO, " ПЕРЕГРУЗ" if GameState.overloaded() else ""]) + ("На корабле" if _ship_zone() != "bay" else "Отсек ремонта: восстановление ×%.1f" % (1.0 + t_bay / 6.0))
+		_env_label.text = ("Трюм %d/%d ед., %d/%d кг%s · " % [GameState.cargo_volume(), GameState.cargo_capacity(), GameState.takeoff_mass(), GameState.max_lift(), " ПЕРЕГРУЗ" if GameState.overloaded() else ""]) + ("На корабле" if _ship_zone() != "bay" else "Отсек ремонта: восстановление ×%.1f" % (1.0 + t_bay / 6.0))
 		_env_label.add_theme_color_override("font_color", Color("#76e8a0"))
 	else:
 		_env_label.text = "Фон %s · %s" % [Biomes.rad_text(profile.rad), "укрытие" if cover else "открытая местность %d с" % int(t_open)]
@@ -1310,7 +1310,7 @@ func _interact() -> void:
 				_exit_ship()
 			"cockpit":
 				if GameState.overloaded():
-					_notify("Перегруз: %d кг из %d. Корабль не взлетит, выбросьте часть груза в научном отсеке." % [GameState.cargo_mass(), GameState.SHIP_MAX_CARGO], Color("#ff6a4a"))
+					_notify("Перегруз: %d кг из %d. Корабль не взлетит, выбросьте часть груза в научном отсеке." % [GameState.takeoff_mass(), GameState.max_lift()], Color("#ff6a4a"))
 				else:
 					_leave()
 			"lab":
@@ -1321,6 +1321,7 @@ func _interact() -> void:
 
 func _leave() -> void:
 	leaving = true
+	GameState.ship.fuel = max(0.0, float(GameState.ship.fuel) - ShipData.LAND_FUEL)
 	GameState.health = hp
 	for id in trip.minerals:
 		GameState.add_item(id, int(trip.minerals[id]))
@@ -1652,16 +1653,33 @@ func _animate_lab(delta: float) -> void:
 ## Добыча с прогулки переходит в трюм, как только капитан поднялся на борт.
 func _unload_trip() -> void:
 	var count := 0
-	for id in trip.minerals:
-		GameState.add_item(id, int(trip.minerals[id]))
-		GameState.stats.minerals += int(trip.minerals[id])
-		count += int(trip.minerals[id])
-	for s in trip.samples:
+	var left := 0
+	for id in trip.minerals.keys():
+		var n := int(trip.minerals[id])
+		var room := (GameState.cargo_capacity() - GameState.cargo_volume()) / GameState.item_volume(id)
+		var put := mini(n, room)
+		if put > 0:
+			GameState.add_item(id, put)
+			GameState.stats.minerals += put
+			count += put
+		left += n - put
+		if n - put > 0:
+			trip.minerals[id] = n - put
+		else:
+			trip.minerals.erase(id)
+	var moved := 0
+	for s in trip.samples.duplicate():
+		if GameState.cargo_capacity() - GameState.cargo_volume() < int(ShipData.CARGO_VOLUME.sample):
+			left += 1
+			continue
 		GameState.samples.append(s)
-	GameState.stats.samples += trip.samples.size()
-	if count > 0 or not trip.samples.is_empty():
-		_notify("В трюм: минералов %d, образцов %d" % [count, trip.samples.size()], Color("#ffbf55"))
-	trip = {"minerals": {}, "samples": []}
+		trip.samples.erase(s)
+		moved += 1
+	GameState.stats.samples += moved
+	if count > 0 or moved > 0:
+		_notify("В трюм: минералов %d, образцов %d" % [count, moved], Color("#ffbf55"))
+	if left > 0:
+		_notify("Трюм полон! %d ед. добычи остались в рюкзаке." % left, Color("#ff6a4a"))
 
 
 func _open_lab() -> void:
@@ -1720,7 +1738,7 @@ func _suit_inside(delta: float) -> void:
 	if zone == "bay":
 		# Чем дольше в отсеке, тем быстрее идёт восстановление.
 		t_bay += delta
-		var rate := 1.5 * (1.0 + t_bay / 6.0)
+		var rate := 1.5 * (1.0 + t_bay / 6.0) * GameState.repair_mult()
 		suit.rad = min(100.0, suit.rad + rate * delta)
 		suit.armor = min(100.0, suit.armor + rate * delta)
 	else:

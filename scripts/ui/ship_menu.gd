@@ -2,12 +2,17 @@ class_name ShipMenu
 extends PanelContainer
 ## Окно корабля и научной станции.
 ## На корабле: трюм, переработка минералов в материалы, сборка базовых элементов, лаборатория.
-## На научной станции: приборы и вещи за ПОТОМ, наём учёного, продажа изученных образцов.
+## На научной станции: приборы и вещи за ПОТОМ, оборудование, верфь, экипаж, продажа образцов и ресурсов.
+## На рынке заселённой планеты: оборудование, продажа ресурсов, топливо.
 
 const SCIENTIST_PRICE := 300
+const COPILOT_PRICE := 400
+const PILOT_NAMES := ["Рейн Торн", "Кира Мэй", "Борис Ланг", "Селена Ю", "Гарт Ормонд"]
 const NAMES := ["Ирма Вейс", "Тарос Кейн", "Лия Орлова", "Дорн Салех", "Мика Ито", "Ярослав Нейман", "Ава Корр"]
 
 var mode := "ship"
+## Где мы торгуем: {"key", "name", "tech" 1..4, "prices" множитель}.
+var place: Dictionary = {}
 var _tabs: TabContainer
 var _title: Label
 var _status: Label
@@ -50,10 +55,11 @@ func _ready() -> void:
 	GameState.lab_finished.connect(func(s): if visible: _status.text = "Лаборатория: изучен образец %s — это %s!" % [s.id, s.name]; refresh())
 
 
-func open(new_mode: String) -> void:
-	if mode != new_mode:
+func open(new_mode: String, new_place: Dictionary = {}) -> void:
+	if mode != new_mode or place.get("key", "") != new_place.get("key", ""):
 		_tab_index = 0
 	mode = new_mode
+	place = new_place
 	_status.text = ""
 	visible = true
 	refresh()
@@ -76,6 +82,7 @@ func refresh() -> void:
 		c.queue_free()
 	if mode == "ship":
 		_title.text = "Корабль · ПОТОМ: %d" % GameState.money
+		_page("Корабль", _fill_ship)
 		_page("Трюм", _fill_hold)
 		_page("Переработка", func(box): _fill_recipes(box, Items.MATERIALS, "Переработать", 0))
 		_page("Сборка", func(box): _fill_recipes(box, Items.BASICS, "Собрать", 0))
@@ -87,12 +94,21 @@ func refresh() -> void:
 		_page("Сборка", func(box): _fill_recipes(box, Items.BASICS, "Собрать", 0))
 		_page("Образцы", _fill_lab)
 		_page("Трюм", _fill_hold)
+	elif mode == "market":
+		_title.text = "Рынок колонии %s · ПОТОМ: %d" % [place.name, GameState.money]
+		_page("Оборудование", _fill_equipment)
+		_page("Ресурсы", _fill_resources)
+		_page("Корабль", _fill_ship)
+		_page("Трюм", _fill_hold)
 	else:
 		_title.text = "Научная станция · ПОТОМ: %d" % GameState.money
 		_page("Приборы и вещи", func(box): _fill_recipes(box, Items.DEVICES, "Изготовить", 1))
+		_page("Оборудование", _fill_equipment)
+		_page("Верфь", _fill_shipyard)
 		_page("Экипаж", _fill_crew)
+		_page("Ресурсы", _fill_resources)
 		_page("Образцы", _fill_sell)
-		_page("Трюм", _fill_hold)
+		_page("Корабль", _fill_ship)
 	_tabs.current_tab = clampi(want, 0, _tabs.get_tab_count() - 1)
 	_tab_index = _tabs.current_tab
 	_rebuilding = false
@@ -140,8 +156,9 @@ func _button(row: Control, text: String, enabled: bool, action: Callable) -> voi
 
 func _fill_hold(box: VBoxContainer) -> void:
 	var over := GameState.overloaded()
-	_label(box, "Груз: %d из %d кг (предел взлётной массы корабля)%s" % [GameState.cargo_mass(), GameState.SHIP_MAX_CARGO,
-		".  ПЕРЕГРУЗ: корабль не взлетит!" if over else ""], Color("#ff6a4a") if over else Color("#ffbf55"), 20)
+	_label(box, "Объём трюма: %d из %d ед.   Взлётная масса: %d из %d кг%s" % [GameState.cargo_volume(), GameState.cargo_capacity(),
+		GameState.takeoff_mass(), GameState.max_lift(), "   ПЕРЕГРУЗ: корабль не взлетит!" if over else ""],
+		Color("#ff6a4a") if over else Color("#ffbf55"), 19)
 	var su: Dictionary = GameState.suit
 	_label(box, "Скафандр: кислород %d%%, радзащита %d%%, броня %d%%.  Здоровье: %d.  Радзащиту и броню чинит отсек ремонта на корабле во время высадки." % [su.oxygen, su.rad, su.armor, GameState.health], Color("#d0e040"), 18)
 	var groups := [["Минералы", Items.MINERALS], ["Материалы", Items.MATERIALS], ["Базовые элементы", Items.BASICS], ["Приборы и вещи", Items.DEVICES]]
@@ -152,7 +169,7 @@ func _fill_hold(box: VBoxContainer) -> void:
 			var c := GameState.count(id)
 			if c > 0:
 				var extra: String = " (%s)" % g[1][id].sym if g[1][id].has("sym") else ""
-				lines.append([id, "%s%s: %d  ·  %d кг" % [g[1][id].name, extra, c, Items.mass_of(id) * c]])
+				lines.append([id, "%s%s: %d  ·  %d кг · %d ед." % [g[1][id].name, extra, c, Items.mass_of(id) * c, GameState.item_volume(id) * c]])
 		if lines.is_empty():
 			continue
 		empty = false
@@ -233,17 +250,25 @@ func _fill_lab(box: VBoxContainer) -> void:
 # ---------- Станция: экипаж и продажа ----------
 
 func _fill_crew(box: VBoxContainer) -> void:
+	var h := GameState.hull()
+	_label(box, "Корабль «%s» (%s): мест для экипажа %d, одно из них ваше.%s" % [h.name, h.kind, h.crew,
+		" Этому классу нужен второй пилот." if h.copilot else ""], Color(0.7, 0.75, 0.85), 18)
 	_label(box, "Учёный изучает неизвестные образцы в лаборатории корабля. Чем выше его навык, тем сложнее образцы ему по силам.", Color(0.7, 0.75, 0.85), 18)
 	for c in GameState.crew:
 		_label(box, "%s · %s · навык %d" % [c.name, c.role, c.skill])
-	var row := _row(box)
-	_label(row, "Нанять учёного (навык 1–3)  ·  %d ПОТОМ" % SCIENTIST_PRICE)
-	_button(row, "Нанять", GameState.money >= SCIENTIST_PRICE, func():
-		GameState.money -= SCIENTIST_PRICE
-		var c := {"name": NAMES[randi() % NAMES.size()], "role": "учёный", "skill": randi_range(1, 3)}
-		GameState.crew.append(c)
-		_status.text = "%s теперь в экипаже. Навык: %d." % [c.name, c.skill]
-		refresh())
+	var full := GameState.crew_full()
+	if full:
+		_label(box, "Мест на корабле больше нет. Нужен корпус побольше (верфь).", Color("#ff8a6a"))
+	for offer in [["учёного", "учёный", SCIENTIST_PRICE, NAMES], ["второго пилота", "второй пилот", COPILOT_PRICE, PILOT_NAMES]]:
+		var row := _row(box)
+		_label(row, "Нанять %s (навык 1–3)  ·  %d ПОТОМ" % [offer[0], offer[2]])
+		_button(row, "Нанять", GameState.money >= int(offer[2]) and not full, func():
+			GameState.money -= int(offer[2])
+			var names: Array = offer[3]
+			var c := {"name": names[randi() % names.size()], "role": offer[1], "skill": randi_range(1, 3)}
+			GameState.crew.append(c)
+			_status.text = "%s теперь в экипаже. Навык: %d." % [c.name, c.skill]
+			refresh())
 
 
 func _fill_sell(box: VBoxContainer) -> void:
@@ -262,3 +287,142 @@ func _fill_sell(box: VBoxContainer) -> void:
 			refresh())
 	if not any:
 		_label(box, "Изученных образцов нет.", Color(0.7, 0.75, 0.85))
+
+
+# ---------- Корабль, оборудование, верфь, ресурсы ----------
+
+func _fill_ship(box: VBoxContainer) -> void:
+	var h := GameState.hull()
+	_label(box, "«%s» · класс %s" % [h.name, h.kind], Color("#ffbf55"), 24)
+	_label(box, "Вместимость корпуса: %d ед. (оборудование %d, груз %d, свободно %d)" % [h.capacity, GameState.equip_volume(),
+		GameState.cargo_volume(), GameState.cargo_capacity() - GameState.cargo_volume()])
+	_label(box, "Грузоподъёмность: %d кг (масса груза %d и оборудования %d)" % [GameState.max_lift(), GameState.cargo_mass(), GameState.equip_mass()])
+	_label(box, "Скорость: %d   ·   Топливо: %d из %d   ·   Экипаж: %d из %d мест%s" % [GameState.ship_speed(), GameState.ship.fuel,
+		GameState.max_fuel(), GameState.crew.size() + 1, h.crew, "   ·   нужен второй пилот" if h.copilot else ""])
+	_label(box, "Оборудование", Color("#6fdcff"), 22)
+	for slot in ShipData.EQUIP:
+		var e := GameState.equip(slot)
+		if e.is_empty():
+			_label(box, "    %s: пусто" % ShipData.EQUIP[slot].name, Color(0.6, 0.65, 0.75))
+		else:
+			_label(box, "    %s — %s · %d ед., %d кг" % [ShipData.title(e), ShipData.effect_text(e), ShipData.size_of(e), ShipData.mass_of(e)])
+
+
+func _shop_key() -> String:
+	return "%s:%d" % [place.get("key", "station"), int(GameState.hours / 24.0)]
+
+
+func _fill_equipment(box: VBoxContainer) -> void:
+	var tech: int = place.get("tech", 3)
+	var mult: float = place.get("prices", 1.0)
+	# Топливо.
+	var need := int(GameState.max_fuel() - float(GameState.ship.fuel))
+	var cost := need * ShipData.FUEL_PRICE
+	var frow := _row(box)
+	_label(frow, "Топливо: %d из %d. Заправка до полного: %d ПОТОМ" % [GameState.ship.fuel, GameState.max_fuel(), cost], Color("#ffbf55"))
+	_button(frow, "Заправить", need > 0 and GameState.money >= cost, func():
+		GameState.money -= cost
+		GameState.ship.fuel = GameState.max_fuel()
+		_status.text = "Баки полны."
+		refresh())
+	_label(box, "Ваше оборудование (место его покупает за %d%% цены)" % 55, Color("#6fdcff"), 22)
+	for slot in ShipData.EQUIP:
+		var e := GameState.equip(slot)
+		if e.is_empty():
+			continue
+		var row := _row(box)
+		_label(row, "%s — %s" % [ShipData.title(e), ShipData.effect_text(e)], Color(0.9, 0.92, 1.0), 19)
+		var back := int(ShipData.buyback(e) * mult)
+		_button(row, "Продать за %d" % back, true, func():
+			GameState.money += back
+			GameState.ship.equip.erase(slot)
+			GameState.ship.fuel = min(float(GameState.ship.fuel), GameState.max_fuel())
+			_status.text = "Продано: %s" % ShipData.title(e)
+			refresh())
+	_label(box, "В продаже сегодня (уровень техники места: %d)" % tech, Color("#6fdcff"), 22)
+	var key := _shop_key()
+	var sold: Array = GameState.shop_sold.get(key, [])
+	var stock := ShipData.shop_stock(place.get("key", "station"), int(GameState.hours / 24.0), tech)
+	for i in stock.size():
+		if sold.has(i):
+			continue
+		var e: Dictionary = stock[i]
+		var price := int(e.cost * mult)
+		var old := GameState.equip(e.id)
+		var trade := int(ShipData.buyback(old) * mult) if not old.is_empty() else 0
+		var new_cap := int(GameState.hull().capacity) - GameState.equip_volume() + (ShipData.size_of(old) if not old.is_empty() else 0) - ShipData.size_of(e)
+		var fits := new_cap >= GameState.cargo_volume()
+		var row := _row(box)
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(info)
+		_label(info, "%s — %s" % [ShipData.title(e), ShipData.effect_text(e)], Color(0.9, 0.92, 1.0), 20)
+		var note := "%d ед., %d кг. %s" % [ShipData.size_of(e), ShipData.mass_of(e), ShipData.EQUIP[e.id].desc]
+		if trade > 0:
+			note += " Старый %s заберут за %d." % [ShipData.title(old), trade]
+		if not fits:
+			note += " Не влезет: освободите трюм."
+		_label(info, note, Color(0.65, 0.72, 0.85) if fits else Color("#ff8a6a"), 16)
+		_button(row, "Купить за %d" % price, fits and GameState.money + trade >= price, func():
+			GameState.money += trade - price
+			GameState.ship.equip[e.id] = {"id": e.id, "mk": e.mk, "cond": e.cond}
+			GameState.ship.fuel = min(float(GameState.ship.fuel), GameState.max_fuel())
+			sold.append(i)
+			GameState.shop_sold[key] = sold
+			_status.text = "Установлено: %s" % ShipData.title(e)
+			refresh())
+
+
+func _fill_shipyard(box: VBoxContainer) -> void:
+	var cur := GameState.hull()
+	var trade := int(float(cur.price) * 0.5)
+	_label(box, "Верфь меняет корпус. Ваш «%s» заберут за %d ПОТОМ. Оборудование, груз и экипаж переезжают, если влезают." % [cur.name, trade], Color(0.7, 0.75, 0.85), 18)
+	for id in ShipData.HULLS:
+		var h: Dictionary = ShipData.HULLS[id]
+		if id == GameState.ship.hull:
+			continue
+		var need_space := GameState.equip_volume() + GameState.cargo_volume()
+		var ok_space := int(h.capacity) >= need_space
+		var ok_crew := GameState.crew.size() <= int(h.crew) - 1
+		var cost := int(h.price) - trade
+		var row := _row(box)
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(info)
+		_label(info, "«%s» · %s" % [h.name, h.kind], Color("#ffbf55"), 21)
+		_label(info, "Вместимость %d ед. · грузоподъёмность %d кг · экипаж %d · скорость ×%.2f%s" % [h.capacity, h.lift, h.crew, h.speed,
+			" · нужен второй пилот" if h.copilot else ""], Color(0.8, 0.85, 0.95), 17)
+		if not ok_space:
+			_label(info, "Не влезут оборудование и груз (%d ед.)" % need_space, Color("#ff8a6a"), 16)
+		if not ok_crew:
+			_label(info, "Не хватит мест для экипажа", Color("#ff8a6a"), 16)
+		_button(row, ("Доплатить %d" % cost) if cost >= 0 else ("Получить %d" % -cost), ok_space and ok_crew and GameState.money >= cost, func():
+			GameState.money -= cost
+			GameState.ship.hull = id
+			_status.text = "Новый корабль: «%s»!" % h.name
+			refresh())
+
+
+func _fill_resources(box: VBoxContainer) -> void:
+	var mult: float = place.get("prices", 1.0)
+	_label(box, "Здесь покупают минералы, материалы и базовые элементы. Переработанное стоит дороже сырья.", Color(0.7, 0.75, 0.85), 18)
+	var any := false
+	for table in [Items.MINERALS, Items.MATERIALS, Items.BASICS]:
+		for id in table:
+			var c := GameState.count(id)
+			if c <= 0:
+				continue
+			any = true
+			var price := maxi(1, int(Items.price_of(id) * mult))
+			var row := _row(box)
+			_label(row, "%s: %d шт. · по %d ПОТОМ" % [Items.name_of(id), c, price])
+			_button(row, "Продать 1", true, func():
+				GameState.add_item(id, -1)
+				GameState.money += price
+				refresh())
+			_button(row, "Все за %d" % (price * c), true, func():
+				GameState.add_item(id, -c)
+				GameState.money += price * c
+				refresh())
+	if not any:
+		_label(box, "Продавать нечего.", Color(0.7, 0.75, 0.85))

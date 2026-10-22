@@ -5,7 +5,6 @@ extends Node3D
 
 const STAR_COLORS := ["#ffd27a", "#ffe9c4", "#a8c8ff", "#ff9a6a", "#fff4e8"]
 const SYLLABLES := ["ка", "ре", "то", "ми", "ан", "ве", "ло", "ри", "за", "ну", "эл", "ор", "си", "та", "гра", "ксе"]
-const SHIP_SPEED := 30.0
 const BOUNDS := 260.0
 
 var rng := RandomNumberGenerator.new()
@@ -30,6 +29,7 @@ var _status_label: Label
 var _cargo_label: Label
 var _land_button: Button
 var _station_button: Button
+var _market_button: Button
 var _menu: ShipMenu
 var _target_marker: MeshInstance3D
 var _glow_tex: GradientTexture2D
@@ -215,7 +215,7 @@ func _build_planets() -> void:
 		body.add_child(clouds)
 		body.add_child(_glow(b.atmo, p.size * 2.4, 0.45))
 
-		var label := _label3d(p.name, Color(0.9, 0.93, 1.0))
+		var label := _label3d(p.name + ("\nколония" if not Biomes.profile(p).colony.is_empty() else ""), Color(0.9, 0.93, 1.0))
 		add_child(label)
 		_add_orbit(p.orbit)
 		p["node"] = body
@@ -508,11 +508,11 @@ func _process(delta: float) -> void:
 			node.look_at(node.position + d, Vector3.UP)
 	_update_camera(delta, false)
 	_time_label.text = GameState.time_text()
-	_money_label.text = "ПОТОМ: %d" % GameState.money
+	_money_label.text = "ПОТОМ: %d   Топливо: %d/%d" % [GameState.money, GameState.ship.fuel, GameState.max_fuel()]
 	var total := 0
 	for id in GameState.inventory:
 		total += int(GameState.inventory[id])
-	_cargo_label.text = "Трюм: %d, образцы: %d" % [total, GameState.samples.size()]
+	_cargo_label.text = "«%s»   Трюм: %d/%d ед., %d/%d кг" % [GameState.hull().name, GameState.cargo_volume(), GameState.cargo_capacity(), GameState.takeoff_mass(), GameState.max_lift()]
 
 
 func _target_info() -> Dictionary:
@@ -530,14 +530,16 @@ func _target_info() -> Dictionary:
 func _move_ship(delta: float) -> void:
 	var info := _target_info()
 	var moving := false
-	if not info.is_empty():
+	var speed := GameState.ship_speed()
+	ship.scale = Vector3.ONE * float(GameState.hull().scale)
+	if not info.is_empty() and not _needs_copilot():
 		var to: Vector3 = info.pos - ship.position
 		to.y = 0
 		var d := to.length()
 		if d > info.stop + 0.05:
-			var step: float = min(d - info.stop, SHIP_SPEED * delta)
+			var step: float = min(d - info.stop, speed * delta)
 			ship.position += to / d * step
-			moving = step > SHIP_SPEED * delta * 0.3
+			moving = step > speed * delta * 0.3
 			var want := atan2(-to.x, -to.z)
 			heading = lerp_angle(heading, want, min(1.0, delta * 5.0))
 		elif info.key != "" and near != info.key:
@@ -574,6 +576,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_menu.open("ship")
 			KEY_N:
 				_open_station()
+			KEY_M:
+				_open_market()
 		return
 	if event is InputEventMouseButton and event.pressed:
 		match event.button_index:
@@ -691,6 +695,11 @@ func _build_ui() -> void:
 	_station_button.add_theme_color_override("font_color", Color("#6fdcff"))
 	_station_button.pressed.connect(_open_station)
 	brow.add_child(_station_button)
+	_market_button = Button.new()
+	_market_button.text = "  Рынок колонии (M)  "
+	_market_button.add_theme_color_override("font_color", Color("#9aff6a"))
+	_market_button.pressed.connect(_open_market)
+	brow.add_child(_market_button)
 	var hold := Button.new()
 	hold.text = "  Корабль: трюм и лаборатория (I)  "
 	hold.pressed.connect(func(): _menu.open("ship"))
@@ -715,6 +724,7 @@ func _build_ui() -> void:
 	layer.add_child(help)
 
 	_menu = ShipMenu.new()
+	_menu.visibility_changed.connect(_set_status)
 	layer.add_child(_menu)
 
 
@@ -723,22 +733,72 @@ func _set_status() -> void:
 		return
 	_land_button.visible = near.begins_with("planet")
 	_station_button.visible = near == "station"
+	_market_button.visible = not _near_colony().is_empty()
+	if _needs_copilot():
+		_status_label.text = "Корабль класса %s не летит без второго пилота. Наймите его на станции (N)." % GameState.hull().kind
+		return
 	if near == "station":
 		_status_label.text = "Пристыкованы к научной станции."
 	elif near.begins_with("planet"):
 		var p: Dictionary = planets[int(near.substr(6))]
-		_status_label.text = "Орбита планеты %s (%s). Фон радиации: %s." % [p.name, Biomes.DATA[p.biome].name, Biomes.rad_text(Biomes.profile(p).rad)]
+		_status_label.text = _orbit_text(p)
 	elif not target.is_empty():
 		_status_label.text = "Летим…"
 	else:
 		_status_label.text = "Выберите цель."
 
 
+## Что видно о планете с орбиты: зависит от сканера корабля.
+func _orbit_text(p: Dictionary) -> String:
+	var pr := Biomes.profile(p)
+	var mk := GameState.scanner_mk()
+	var parts := ["Орбита планеты %s (%s)" % [p.name, Biomes.DATA[p.biome].name]]
+	if not pr.colony.is_empty():
+		parts.append("колония: %s, рынок (M)" % pr.colony.race)
+	parts.append("радиация: " + (Biomes.rad_text(pr.rad) if mk >= 3 else ["низкая", "средняя", "высокая", "очень высокая"][clampi(int(pr.rad / 0.9), 0, 3)] + "?"))
+	if mk >= 1:
+		var names := []
+		for id in pr.minerals:
+			names.append(Items.MINERALS[id].sym)
+		parts.append("минералы: " + (", ".join(names) if not names.is_empty() else "нет"))
+	if mk >= 2:
+		var sp := Fauna.species_for(p, pr, Biomes.DATA[p.biome])
+		parts.append("видов жизни: %d" % sp.size())
+	if mk == 0:
+		parts.append("нужен сканер, чтобы узнать больше")
+	return ". ".join(parts) + "."
+
+
 # ---------- Высадка ----------
 
 func _open_station() -> void:
 	if near == "station":
-		_menu.open("station")
+		_menu.open("station", {"key": "station:" + system_name, "name": "станция", "tech": 4, "prices": 1.0})
+
+
+func _near_colony() -> Dictionary:
+	if not near.begins_with("planet"):
+		return {}
+	var p: Dictionary = planets[int(near.substr(6))]
+	return Biomes.profile(p).colony
+
+
+func _open_market() -> void:
+	var col := _near_colony()
+	if col.is_empty():
+		return
+	var p: Dictionary = planets[int(near.substr(6))]
+	_menu.open("market", {"key": "colony:%d" % p.seed, "name": p.name, "tech": col.tech, "prices": col.prices})
+
+
+## Классам от корвета и выше нужен второй пилот, без него корабль не летит.
+func _needs_copilot() -> bool:
+	if not GameState.hull().copilot:
+		return false
+	for c in GameState.crew:
+		if c.role == "второй пилот":
+			return false
+	return true
 
 
 func _land() -> void:
@@ -746,6 +806,14 @@ func _land() -> void:
 		return
 	var i := int(near.substr(6))
 	var p: Dictionary = planets[i]
+	# Посадка и взлёт стоят топлива, без запаса на взлёт садиться нельзя.
+	if float(GameState.ship.fuel) < ShipData.LAND_FUEL * 2.0:
+		_status_label.text = "Мало топлива для посадки и взлёта (нужно %d). Заправьтесь на станции или на рынке колонии." % int(ShipData.LAND_FUEL * 2.0)
+		return
+	if GameState.overloaded():
+		_status_label.text = "Перегруз: с такой массой корабль не сядет и не взлетит. Продайте или выбросьте часть груза."
+		return
+	GameState.ship.fuel = float(GameState.ship.fuel) - ShipData.LAND_FUEL
 	GameState.current_planet = {"name": p.name, "biome": p.biome, "seed": p.seed}
 	GameState.system_state = {"planet": i}
 	get_tree().change_scene_to_file("res://scenes/planet/planet_surface.tscn")

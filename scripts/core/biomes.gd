@@ -53,6 +53,9 @@ const RAD_BASE := {"desert": 1.0, "ice": 0.6, "jungle": 0.35, "volcano": 1.9, "t
 const O2_USE := {"desert": 1.0, "ice": 1.0, "jungle": 0.5, "volcano": 1.3, "toxic": 1.2}
 
 
+const RACES := ["Люди", "Империя Аркос", "Орден Эфира", "Конклав синтетов", "Рой Кхарр", "Нокты"]
+
+
 ## Постоянные свойства конкретной планеты по её сиду: радиация и какие минералы в недрах.
 ## Примерно каждая седьмая планета пустая: минералов нет совсем.
 static func profile(planet: Dictionary) -> Dictionary:
@@ -68,8 +71,18 @@ static func profile(planet: Dictionary) -> Dictionary:
 			var id := Items.roll_mineral(r, biome, r.randf_range(0.0, 8.0))
 			if id != "" and not minerals.has(id):
 				minerals.append(id)
+	var rad := float(RAD_BASE[biome]) * r.randf_range(0.6, 1.6)
+	# Заселённые планеты: колония с рынком (покупка и продажа оборудования и ресурсов).
+	var colony := {}
+	if rad < 2.6 and r.randf() < 0.4:
+		colony = {
+			"race": RACES[r.randi() % RACES.size()],
+			"tech": r.randi_range(1, 4),
+			"prices": r.randf_range(0.85, 1.25),
+		}
 	return {
-		"rad": float(RAD_BASE[biome]) * r.randf_range(0.6, 1.6),
+		"rad": rad,
+		"colony": colony,
 		"o2": float(O2_USE[biome]),
 		"minerals": minerals,
 	}

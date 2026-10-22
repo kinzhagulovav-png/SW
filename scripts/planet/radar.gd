@@ -5,7 +5,7 @@ extends Control
 ## животные: красные (хищники и разозлённые), оранжевые (осторожные), светло-зелёные (мирные), минералы: точки своего цвета, образцы: зелёные.
 ## Со сканером недр видны богатые жилы (оранжевые пятна).
 
-const RANGE := 70.0
+var RANGE := 70.0  # дальность зависит от радара корабля
 const RADIUS := 105.0
 
 var surface: Node3D  # сцена планеты: player, yaw, ship, items, beasts
@@ -14,6 +14,7 @@ var _font: Font
 
 
 func _ready() -> void:
+	RANGE = GameState.radar_range()
 	custom_minimum_size = Vector2(RADIUS * 2.0 + 20.0, RADIUS * 2.0 + 44.0)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_font = ThemeDB.fallback_font
