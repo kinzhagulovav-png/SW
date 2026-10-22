@@ -139,6 +139,9 @@ func _button(row: Control, text: String, enabled: bool, action: Callable) -> voi
 # ---------- Трюм ----------
 
 func _fill_hold(box: VBoxContainer) -> void:
+	var over := GameState.overloaded()
+	_label(box, "Груз: %d из %d кг (предел взлётной массы корабля)%s" % [GameState.cargo_mass(), GameState.SHIP_MAX_CARGO,
+		".  ПЕРЕГРУЗ: корабль не взлетит!" if over else ""], Color("#ff6a4a") if over else Color("#ffbf55"), 20)
 	var su: Dictionary = GameState.suit
 	_label(box, "Скафандр: кислород %d%%, радзащита %d%%, броня %d%%.  Здоровье: %d.  Радзащиту и броню чинит отсек ремонта на корабле во время высадки." % [su.oxygen, su.rad, su.armor, GameState.health], Color("#d0e040"), 18)
 	var groups := [["Минералы", Items.MINERALS], ["Материалы", Items.MATERIALS], ["Базовые элементы", Items.BASICS], ["Приборы и вещи", Items.DEVICES]]
@@ -149,12 +152,22 @@ func _fill_hold(box: VBoxContainer) -> void:
 			var c := GameState.count(id)
 			if c > 0:
 				var extra: String = " (%s)" % g[1][id].sym if g[1][id].has("sym") else ""
-				lines.append("%s%s: %d" % [g[1][id].name, extra, c])
+				lines.append([id, "%s%s: %d  ·  %d кг" % [g[1][id].name, extra, c, Items.mass_of(id) * c]])
 		if lines.is_empty():
 			continue
 		empty = false
 		_label(box, g[0], Color("#6fdcff"), 22)
-		_label(box, "    " + ",   ".join(lines))
+		for ln in lines:
+			var row := _row(box)
+			_label(row, "    " + ln[1], Color(0.9, 0.92, 1.0), 19)
+			if mode != "station":
+				var item_id: String = ln[0]
+				_button(row, "Выбросить 1", true, func():
+					GameState.add_item(item_id, -1)
+					refresh())
+				_button(row, "Все", true, func():
+					GameState.add_item(item_id, -GameState.count(item_id))
+					refresh())
 	if empty:
 		_label(box, "Трюм пуст. Высаживайтесь на планеты и добывайте минералы лапатроном.", Color(0.7, 0.75, 0.85))
 	_label(box, "Неизученных образцов: %d" % GameState.samples.filter(func(s): return not s.studied).size(), Color("#9aff6a"))

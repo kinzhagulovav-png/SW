@@ -8,19 +8,19 @@ extends RefCounted
 
 ## depth: на какой глубине (м) минерал начинает встречаться в недрах; weight: насколько часто.
 const MINERALS := {
-	"fe": {"name": "Железо", "sym": "Fe", "color": Color("#8a8f99"), "depth": 0.0, "weight": 10.0, "price": 4},
-	"cu": {"name": "Медь", "sym": "Cu", "color": Color("#d07a40"), "depth": 0.0, "weight": 7.0, "price": 6},
-	"si": {"name": "Кремний", "sym": "Si", "color": Color("#7a8aa8"), "depth": 0.0, "weight": 8.0, "price": 4},
-	"c": {"name": "Углерод", "sym": "C", "color": Color("#3a3a40"), "depth": 0.0, "weight": 8.0, "price": 3},
-	"al": {"name": "Алюминий", "sym": "Al", "color": Color("#d0d4dc"), "depth": 1.0, "weight": 6.0, "price": 6},
-	"s": {"name": "Сера", "sym": "S", "color": Color("#e8d040"), "depth": 0.0, "weight": 5.0, "price": 5},
-	"h2o": {"name": "Водяной лёд", "sym": "H₂O", "color": Color("#a8d8ff"), "depth": 0.0, "weight": 5.0, "price": 2},
-	"ni": {"name": "Никель", "sym": "Ni", "color": Color("#b8b890"), "depth": 2.0, "weight": 4.0, "price": 9},
-	"li": {"name": "Литий", "sym": "Li", "color": Color("#e8f0ff"), "depth": 2.0, "weight": 3.0, "price": 12},
-	"ti": {"name": "Титан", "sym": "Ti", "color": Color("#9ab0c8"), "depth": 3.0, "weight": 3.0, "price": 14},
-	"au": {"name": "Золото", "sym": "Au", "color": Color("#ffcc33"), "depth": 5.0, "weight": 1.5, "price": 40},
-	"pt": {"name": "Платина", "sym": "Pt", "color": Color("#eceef2"), "depth": 6.0, "weight": 1.0, "price": 55},
-	"u": {"name": "Уран", "sym": "U", "color": Color("#6aff4a"), "depth": 7.0, "weight": 1.0, "price": 60},
+	"fe": {"name": "Железо", "sym": "Fe", "color": Color("#8a8f99"), "depth": 0.0, "weight": 10.0, "price": 4, "mass": 8},
+	"cu": {"name": "Медь", "sym": "Cu", "color": Color("#d07a40"), "depth": 0.0, "weight": 7.0, "price": 6, "mass": 9},
+	"si": {"name": "Кремний", "sym": "Si", "color": Color("#7a8aa8"), "depth": 0.0, "weight": 8.0, "price": 4, "mass": 3},
+	"c": {"name": "Углерод", "sym": "C", "color": Color("#3a3a40"), "depth": 0.0, "weight": 8.0, "price": 3, "mass": 2},
+	"al": {"name": "Алюминий", "sym": "Al", "color": Color("#d0d4dc"), "depth": 1.0, "weight": 6.0, "price": 6, "mass": 3},
+	"s": {"name": "Сера", "sym": "S", "color": Color("#e8d040"), "depth": 0.0, "weight": 5.0, "price": 5, "mass": 2},
+	"h2o": {"name": "Водяной лёд", "sym": "H₂O", "color": Color("#a8d8ff"), "depth": 0.0, "weight": 5.0, "price": 2, "mass": 1},
+	"ni": {"name": "Никель", "sym": "Ni", "color": Color("#b8b890"), "depth": 2.0, "weight": 4.0, "price": 9, "mass": 9},
+	"li": {"name": "Литий", "sym": "Li", "color": Color("#e8f0ff"), "depth": 2.0, "weight": 3.0, "price": 12, "mass": 1},
+	"ti": {"name": "Титан", "sym": "Ti", "color": Color("#9ab0c8"), "depth": 3.0, "weight": 3.0, "price": 14, "mass": 5},
+	"au": {"name": "Золото", "sym": "Au", "color": Color("#ffcc33"), "depth": 5.0, "weight": 1.5, "price": 40, "mass": 19},
+	"pt": {"name": "Платина", "sym": "Pt", "color": Color("#eceef2"), "depth": 6.0, "weight": 1.0, "price": 55, "mass": 21},
+	"u": {"name": "Уран", "sym": "U", "color": Color("#6aff4a"), "depth": 7.0, "weight": 1.0, "price": 60, "mass": 19},
 }
 
 ## Какие минералы чаще встречаются в каждом биоме (множитель веса).
@@ -76,6 +76,12 @@ const DEVICES := {
 	"blaster2": {"name": "Бластер Мк-2", "need": {"chip": 1, "core": 1}, "price": 400,
 		"desc": "Двойной урон и быстрее стреляет."},
 }
+
+## Масса единицы минерала в кг задана в MINERALS.mass; образец весит SAMPLE_MASS.
+## В рюкзаке единица минерала занимает 1 ячейку объёма, образец — SAMPLE_VOLUME.
+const SAMPLE_MASS := 5.0
+const SAMPLE_VOLUME := 2
+const DEVICE_MASS := 6.0
 
 const SAMPLE_PREFIX := ["Кри", "Ноа", "Вел", "Ор", "Зен", "Тал", "Ир", "Ксо", "Мер", "Аль"]
 const SAMPLE_SUFFIX := ["ит", "оксид", "ан", "иний", "оль", "ид", "ен"]
@@ -150,3 +156,16 @@ static func need_text(need: Dictionary) -> String:
 	for id in need:
 		parts.append("%s ×%d" % [name_of(id), need[id]])
 	return ", ".join(parts)
+
+
+## Масса предмета: у материалов и базовых элементов — сумма ингредиентов.
+static func mass_of(id: String) -> float:
+	if MINERALS.has(id):
+		return float(MINERALS[id].mass)
+	for table in [MATERIALS, BASICS]:
+		if table.has(id):
+			var m := 0.0
+			for k in table[id].need:
+				m += mass_of(k) * int(table[id].need[k])
+			return m
+	return DEVICE_MASS

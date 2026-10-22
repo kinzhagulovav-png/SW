@@ -2,7 +2,7 @@ class_name PlanetRadar
 extends Control
 ## Круглый радар на поверхности планеты. Верх радара: куда смотрит игрок.
 ## Корабль: жёлтый значок (за пределами дальности прижимается к краю стрелкой),
-## животные: красные точки, минералы: точки своего цвета, образцы: зелёные.
+## животные: красные (хищники и разозлённые), оранжевые (осторожные), светло-зелёные (мирные), минералы: точки своего цвета, образцы: зелёные.
 ## Со сканером недр видны богатые жилы (оранжевые пятна).
 
 const RANGE := 70.0
@@ -79,7 +79,8 @@ func _draw() -> void:
 	for b in surface.beasts:
 		var r: Vector2 = _to_radar(b.node.global_position)
 		if r.length() < RADIUS:
-			draw_circle(c + r, 4.0, Color("#ff4a3a"))
+			var bc := Color("#ff4a3a") if b.angry else (Color("#ffa040") if b.sp.temper == "neutral" else Color("#c8ff9a"))
+			draw_circle(c + r, 4.0, bc)
 
 	# Игрок в центре: стрелка вверх.
 	draw_colored_polygon(PackedVector2Array([c + Vector2(0, -9), c + Vector2(6, 7), c + Vector2(-6, 7)]), Color("#6fdcff"))

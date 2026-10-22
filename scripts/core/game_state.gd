@@ -9,6 +9,10 @@ signal lab_finished(sample: Dictionary)
 const HOURS_PER_SECOND := 1.0
 const START_HOURS := 8.0
 const HOURS_PER_STUDY_LEVEL := 6.0
+## Объём рюкзака капитана (ячейки: минерал 1, образец 2) и максимальная масса груза,
+## с которой корабль ещё может взлететь.
+const BACKPACK := 40
+const SHIP_MAX_CARGO := 600.0
 
 var hours: float = START_HOURS
 var money: int = 700 ## валюта «ПОТОМ»
@@ -87,6 +91,18 @@ func add_item(id: String, count: int = 1) -> void:
 
 func count(id: String) -> int:
 	return int(inventory.get(id, 0))
+
+
+## Масса всего груза в трюме, кг.
+func cargo_mass() -> float:
+	var m := 0.0
+	for id in inventory:
+		m += Items.mass_of(id) * int(inventory[id])
+	return m + samples.size() * Items.SAMPLE_MASS
+
+
+func overloaded() -> bool:
+	return cargo_mass() > SHIP_MAX_CARGO
 
 
 func has_device(id: String) -> bool:

@@ -45,6 +45,8 @@ var beam: MeshInstance3D
 var beam_life := 0.0
 var items: Array[Dictionary] = []
 var beasts: Array[Dictionary] = []
+var species: Array[Dictionary] = []
+var _life_time := 0.0
 var trip := {"minerals": {}, "samples": []}
 var leaving := false
 var profile: Dictionary   # Biomes.profile: радиация, кислород, минералы планеты
@@ -115,6 +117,7 @@ func _ready() -> void:
 	GameState.stats.landings += 1
 	rng.randomize()  # планета уже построена, дальше добыча случайна
 	_notify("Фон радиации: %s" % Biomes.rad_text(profile.rad), Color("#ffbf55"))
+	_notify("Сканер жизни: видов существ %d" % species.size() if not species.is_empty() else "Сканер жизни: жизни не обнаружено", Color("#9ad8ff"))
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
@@ -698,67 +701,34 @@ func _build_items() -> void:
 		items.append({"node": g, "type": "sample"})
 
 
-func _make_creature(col: Color) -> Dictionary:
-	var g := Node3D.new()
-	var mat := ShipBuilder.metal(col, 0.05, 0.55)
-	var body := MeshInstance3D.new()
-	var bm := SphereMesh.new()
-	bm.material = mat
-	body.mesh = bm
-	body.scale = Vector3(1.6, 1.24, 2.5) * 0.5
-	body.position.y = 1.55
-	g.add_child(body)
-	var head := MeshInstance3D.new()
-	var hm := SphereMesh.new()
-	hm.radius = 0.5
-	hm.height = 1.0
-	hm.material = mat
-	head.mesh = hm
-	head.position = Vector3(0, 1.95, -1.2)
-	head.scale = Vector3(1, 0.9, 1.2)
-	g.add_child(head)
-	var eye_mat := ShipBuilder.unshaded(Color(3.5, 2.2, 0.5))
-	for s in [-1.0, 1.0]:
-		var e := MeshInstance3D.new()
-		var em := SphereMesh.new()
-		em.radius = 0.08
-		em.height = 0.16
-		em.material = eye_mat
-		e.mesh = em
-		e.position = Vector3(s * 0.22, 2.05, -1.68)
-		g.add_child(e)
-	var legs: Array[Node3D] = []
-	for lp in [Vector2(-0.5, -0.6), Vector2(0.5, -0.6), Vector2(-0.5, 0.6), Vector2(0.5, 0.6)]:
-		var pivot := Node3D.new()
-		pivot.position = Vector3(lp.x, 1.3, lp.y)
-		var leg := MeshInstance3D.new()
-		var lm := CylinderMesh.new()
-		lm.top_radius = 0.13
-		lm.bottom_radius = 0.08
-		lm.height = 1.3
-		lm.material = mat
-		leg.mesh = lm
-		leg.position.y = -0.65
-		pivot.add_child(leg)
-		g.add_child(pivot)
-		legs.append(pivot)
-	g.scale = Vector3.ONE * rng.randf_range(0.8, 1.4)
-	return {"node": g, "legs": legs}
-
-
+## Существа планеты: виды зависят от биома, радиации и опасности (см. Fauna).
 func _build_creatures() -> void:
-	var count := int(round(4.0 * float(B.danger))) + 1
-	for i in count:
-		var p = _spot(140.0, 0.6)
-		if p == null:
+	species = Fauna.species_for(planet, profile, B)
+	for sp in species:
+		var spread := rng.randf_range(40.0, 130.0)
+		var center = _spot(140.0, 0.6)
+		if center == null:
 			continue
-		var c := _make_creature(B.creature)
-		c.node.position = p
-		add_child(c.node)
-		c["home"] = p
-		c["hp"] = 3
-		c["phase"] = rng.randf() * TAU
-		beasts.append(c)
+		for i in int(sp.count):
+			var p = _spot(140.0, 0.55)
+			if p == null:
+				continue
+			# Стая держится вместе вокруг своего центра.
+			var home: Vector3 = (center as Vector3).lerp(p, clamp(spread / 140.0, 0.2, 0.8))
+			home.y = ground(home.x, home.z)
+			var c := Fauna.build(sp)
+			c.node.position = home
+			add_child(c.node)
+			c["sp"] = sp
+			c["home"] = home
+			c["target"] = home
+			c["hp"] = int(sp.hp)
+			c["angry"] = sp.temper == "aggressive"
+			c["scared"] = 0.0
+			c["phase"] = rng.randf() * TAU
+			c["seed"] = rng.randf() * 10.0
+			c["think"] = rng.randf() * 3.0
+			beasts.append(c)
 
 
 func _build_ship() -> void:
@@ -992,22 +962,9 @@ func _process(delta: float) -> void:
 		return
 	for it in items:
 		it.node.rotation.y += delta * 0.8
+	_life_time += delta
 	for b in beasts:
-		var n: Node3D = b.node
-		var d := n.position.distance_to(player.position)
-		var chase := d < 26.0 * float(B.danger)
-		var tgt: Vector3 = player.position if chase else b.home
-		var to := Vector3(tgt.x - n.position.x, 0, tgt.z - n.position.z)
-		var moving := to.length() > 1.6
-		if moving:
-			n.position += to.normalized() * (6.5 if chase else 2.0) * delta
-			n.rotation.y = atan2(-to.x, -to.z)
-			b.phase += delta * (12.0 if chase else 6.0)
-		n.position.y = ground(n.position.x, n.position.z)
-		for i in b.legs.size():
-			b.legs[i].rotation.x = sin(b.phase + (0.0 if i == 0 or i == 3 else PI)) * 0.55
-		if d < 2.6:
-			_hurt(12.0 * delta)
+		_update_beast(b, delta)
 	shot_cd -= delta
 	var use := not inside and (Input.is_key_pressed(KEY_F) or (Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED))
 	if use and shot_cd <= 0.0:
@@ -1039,7 +996,7 @@ func _process(delta: float) -> void:
 	_rad_bar.value = GameState.suit.rad
 	_armor_bar.value = GameState.suit.armor
 	if inside:
-		_env_label.text = "На корабле" if _ship_zone() != "bay" else "Отсек ремонта: восстановление ×%.1f" % (1.0 + t_bay / 6.0)
+		_env_label.text = ("Груз %d/%d кг%s · " % [GameState.cargo_mass(), GameState.SHIP_MAX_CARGO, " ПЕРЕГРУЗ" if GameState.overloaded() else ""]) + ("На корабле" if _ship_zone() != "bay" else "Отсек ремонта: восстановление ×%.1f" % (1.0 + t_bay / 6.0))
 		_env_label.add_theme_color_override("font_color", Color("#76e8a0"))
 	else:
 		_env_label.text = "Фон %s · %s" % [Biomes.rad_text(profile.rad), "укрытие" if cover else "открытая местность %d с" % int(t_open)]
@@ -1047,7 +1004,7 @@ func _process(delta: float) -> void:
 	var found := 0
 	for k in trip.minerals:
 		found += int(trip.minerals[k])
-	_info.text = "Минералы: %d   Образцы: %d" % [found, trip.samples.size()]
+	_info.text = "Рюкзак: %d/%d   Минералы: %d   Образцы: %d" % [backpack_used(), GameState.BACKPACK, found, trip.samples.size()]
 	if not inside:
 		_info.text += "   До корабля: %d м" % int(to_ship)
 	_tool_label.text = "[1] Бластер%s     [2] Лапатрон%s" % [
@@ -1058,6 +1015,10 @@ func _process(delta: float) -> void:
 		var hit = _aim_ground()
 		if hit != null and (hit as Vector3).y < orig_heights_at(hit) - max_depth() + 0.05:
 			hint = "Глубже лапатрон не берёт"
+	if not inside:
+		var look := _beast_in_sight()
+		if not look.is_empty():
+			hint = Fauna.describe(look.sp)
 	if inside:
 		hint = {"hatch": "E: выйти наружу", "cockpit": "E: взлететь", "lab": "E: научная работа (переработка, сборка, изучение образцов)", "bay": "Стойте в отсеке: радзащита и броня восстанавливаются"}.get(_ship_zone(), "")
 	elif to_ship < TAKEOFF_DIST:
@@ -1070,12 +1031,64 @@ func _process(delta: float) -> void:
 		_feed_time = 1.2
 
 
+## Существо под прицелом (до 40 м), чтобы показать его вид и нрав.
+func _beast_in_sight() -> Dictionary:
+	var dir := -cam.global_transform.basis.z
+	for b in beasts:
+		var to: Vector3 = b.node.global_position + Vector3(0, float(b.sp.size), 0) - cam.global_position
+		if to.length() < 40.0 and to.normalized().dot(dir) > 0.985:
+			return b
+	return {}
+
+
+func _update_beast(b: Dictionary, delta: float) -> void:
+	var n: Node3D = b.node
+	var sp: Dictionary = b.sp
+	var flat := Vector2(n.position.x - player.position.x, n.position.z - player.position.z)
+	var d := flat.length() if not inside else 9999.0
+	var tgt: Vector3 = b.target
+	var speed: float = sp.walk
+	b.scared = max(0.0, b.scared - delta)
+	if b.angry and d < 30.0 * float(B.danger):
+		tgt = player.position
+		speed = sp.run
+	elif (sp.temper == "passive" and d < 12.0) or b.scared > 0.0:
+		# Убегает от капитана.
+		var away := Vector3(flat.x, 0, flat.y).normalized()
+		tgt = n.position + away * 10.0
+		speed = sp.run
+	else:
+		b.think -= delta
+		if b.think <= 0.0 or Vector2(tgt.x - n.position.x, tgt.z - n.position.z).length() < 1.5:
+			b.think = rng.randf_range(3.0, 8.0)
+			var a := rng.randf() * TAU
+			b.target = b.home + Vector3(cos(a), 0, sin(a)) * rng.randf_range(3.0, 14.0)
+			tgt = b.target
+	var to := Vector3(tgt.x - n.position.x, 0, tgt.z - n.position.z)
+	var moving := to.length() > 1.6
+	if moving:
+		var step := to.normalized() * speed * delta
+		var nx: float = clamp(n.position.x + step.x, -SIZE / 2.0 + 5, SIZE / 2.0 - 5)
+		var nz: float = clamp(n.position.z + step.z, -SIZE / 2.0 + 5, SIZE / 2.0 - 5)
+		# В воду и лаву звери не заходят (летуны и медузы могут).
+		var flies: bool = sp.plan == "flyer" or sp.plan == "floater"
+		if flies or water.is_empty() or ground(nx, nz) > level + 0.3:
+			n.position.x = nx
+			n.position.z = nz
+		n.rotation.y = lerp_angle(n.rotation.y, atan2(-to.x, -to.z), min(1.0, delta * 6.0))
+		b.phase += delta * (12.0 if speed > float(sp.walk) else 6.0)
+	var lift := Fauna.animate(b, _life_time, moving)
+	n.position.y = ground(n.position.x, n.position.z) + lift * float(sp.size)
+	if b.angry and d < 2.6 * float(sp.size) + 0.6:
+		_hurt(float(sp.dmg) * delta)
+
+
 func _shoot() -> void:
 	var dir := -cam.global_transform.basis.z
 	var best = null
 	var best_d := 50.0
 	for b in beasts:
-		var c: Vector3 = b.node.global_position + Vector3(0, 1.5, 0)
+		var c: Vector3 = b.node.global_position + Vector3(0, 1.0 * float(b.sp.size), 0)
 		var to := c - cam.global_position
 		var d := to.length()
 		if d < best_d and to.normalized().dot(dir) > 0.982:
@@ -1087,6 +1100,11 @@ func _shoot() -> void:
 	recoil = 0.035
 	if best != null:
 		best.hp -= 2 if GameState.has_device("blaster2") else 1
+		# Раненый зверь: мирный убегает, остальные звереют.
+		if best.sp.temper == "passive":
+			best.scared = 6.0
+		else:
+			best.angry = true
 		if best.hp <= 0:
 			best.node.queue_free()
 			beasts.erase(best)
@@ -1169,23 +1187,48 @@ func _use_lapatron() -> void:
 
 
 func _collect(it: Dictionary) -> void:
+	if it.type == "mineral":
+		var took := _add_mineral(it.mineral, int(it.amount))
+		it.amount = int(it.amount) - took
+		if it.amount > 0:
+			return
+	elif not _add_sample(0.0):
+		return
 	items.erase(it)
 	it.node.queue_free()
-	if it.type == "mineral":
-		_add_mineral(it.mineral, int(it.amount))
-	else:
-		_add_sample(0.0)
 
 
-func _add_mineral(id: String, amount: int) -> void:
-	trip.minerals[id] = int(trip.minerals.get(id, 0)) + amount
+func backpack_used() -> int:
+	var used := 0
+	for k in trip.minerals:
+		used += int(trip.minerals[k])
+	return used + trip.samples.size() * Items.SAMPLE_VOLUME
+
+
+func _backpack_full() -> void:
+	_notify("Рюкзак полон! Отнесите добычу на корабль.", Color("#ff8a6a"))
+
+
+## Кладёт минерал в рюкзак, сколько влезет. Возвращает, сколько положили.
+func _add_mineral(id: String, amount: int) -> int:
+	var room := GameState.BACKPACK - backpack_used()
+	var took := mini(amount, room)
+	if took <= 0:
+		_backpack_full()
+		return 0
+	trip.minerals[id] = int(trip.minerals.get(id, 0)) + took
 	var m: Dictionary = Items.MINERALS[id]
-	_notify("+%d %s (%s)" % [amount, m.name, m.sym], m.color.lightened(0.3))
+	_notify("+%d %s (%s)" % [took, m.name, m.sym], m.color.lightened(0.3))
+	return took
 
 
-func _add_sample(depth: float) -> void:
+func _add_sample(depth: float) -> bool:
+	if GameState.BACKPACK - backpack_used() < Items.SAMPLE_VOLUME:
+		_backpack_full()
+		return false
 	trip.samples.append(Items.make_sample(rng, planet.biome, planet.name, depth))
 	_notify("Найден неизвестный образец! Изучите его в лаборатории корабля.", Color("#9aff6a"))
+	return true
 
 
 ## Добыча из недр. Минералы лежат только в жилах (сканер недр их показывает),
@@ -1266,7 +1309,10 @@ func _interact() -> void:
 			"hatch":
 				_exit_ship()
 			"cockpit":
-				_leave()
+				if GameState.overloaded():
+					_notify("Перегруз: %d кг из %d. Корабль не взлетит, выбросьте часть груза в научном отсеке." % [GameState.cargo_mass(), GameState.SHIP_MAX_CARGO], Color("#ff6a4a"))
+				else:
+					_leave()
 			"lab":
 				_open_lab()
 	elif ship.global_position.distance_to(player.global_position) < TAKEOFF_DIST:
@@ -1298,6 +1344,8 @@ func _die() -> void:
 func _notify(text: String, col: Color) -> void:
 	var l := Label.new()
 	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	l.add_theme_color_override("font_color", col)
 	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.9))
 	_feed.add_child(l)
