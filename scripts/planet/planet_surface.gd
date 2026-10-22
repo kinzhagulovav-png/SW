@@ -960,6 +960,16 @@ func _build_ui() -> void:
 	cross.offset_top = -14
 	layer.add_child(cross)
 
+	var radar := PlanetRadar.new()
+	radar.surface = self
+	radar.anchor_top = 1.0
+	radar.anchor_bottom = 1.0
+	radar.offset_left = 16
+	radar.offset_top = -270
+	radar.offset_right = 246
+	radar.offset_bottom = -16
+	layer.add_child(radar)
+
 	_prompt = Label.new()
 	_prompt.theme = theme
 	_prompt.add_theme_color_override("font_color", Color("#ffbf55"))
